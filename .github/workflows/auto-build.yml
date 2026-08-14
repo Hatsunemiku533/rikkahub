@@ -136,7 +136,7 @@ jobs:
             基于上游 `${{ needs.check.outputs.tag }}` 自动构建，附加图片自动压缩至 500KB 补丁。
 
             ⚠️ 自编译签名版本，请先备份聊天数据，卸载官方版后安装（仅首次需要）。
-          files: upstream/app/build/outputs/apk/release/*.apk
+          files: upstream/app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
       - name: notify ntfy
         if: success() && env.NTFY_TOPIC != ''
