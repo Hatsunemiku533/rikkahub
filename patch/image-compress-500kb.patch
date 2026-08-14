@@ -1,4 +1,4 @@
-﻿diff --git a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
+diff --git a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
 index 91b80db..f0f5e42 100644
 --- a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
 +++ b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
@@ -6,7 +6,7 @@ index 91b80db..f0f5e42 100644
      "image/webp",
  )
  
-+// 鍥剧墖鍘嬬缉鐩爣锛氬彂閫佺粰妯″瀷鐨勫浘鐗囧帇缂╁埌 500KB 浠ュ唴锛堜笌 opencode 鐨勫浘鐗囧帇缂╃瓥鐣ヤ竴鑷达級
++// 图片压缩目标：发送给模型的图片压缩到 500KB 以内（与 opencode 的图片压缩策略一致）
 +private const val MAX_COMPRESSED_BYTES = 500_000L
 +private const val TARGET_MAX_DIMENSION = 1600
 +private const val TARGET_MAX_PIXELS = 4_000_000L
@@ -29,7 +29,8 @@ index 91b80db..f0f5e42 100644
 -    quality: Int = 85
 +    mimeType: String
  ): Pair<String, String> {
-     // GIF 淇濇寔鍘熸牱锛堝彲鑳芥槸鍔ㄥ浘锛?     if (mimeType == "image/gif") {
+     // GIF 保持原样（可能是动图）
+     if (mimeType == "image/gif") {
 @@ -134,23 +141,51 @@ private fun File.compressAndEncode(
      options.inSampleSize = calculateImageInSampleSize(
          width = options.outWidth,
@@ -48,13 +49,13 @@ index 91b80db..f0f5e42 100644
  
      return try {
 -        val byteArrayOutputStream = ByteArrayOutputStream()
--        // 寮哄埗浣跨敤 JPEG 鏍煎紡锛屽洜涓哄緢澶氭彁渚涘晢涓嶆敮鎸?webp
+-        // 强制使用 JPEG 格式，因为很多提供商不支持 webp
 -        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
 -            normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)
 +        var quality = INITIAL_JPEG_QUALITY
 +        var bytes = encodeJpegBytes(working, quality)
 +        var attempts = 0
-+        // 寰幆鍘嬬缉鐩村埌 鈮?500KB锛氬厛闄?JPEG 璐ㄩ噺锛岃川閲忚Е搴曞悗绛夋瘮缂╁皬灏哄閲嶈瘯
++        // 循环压缩直到 ≤ 500KB：先降 JPEG 质量，质量触底后等比缩小尺寸重试
 +        while (bytes.size > MAX_COMPRESSED_BYTES && attempts < MAX_COMPRESS_ATTEMPTS) {
 +            attempts++
 +            if (quality > MIN_JPEG_QUALITY) {
@@ -73,13 +74,13 @@ index 91b80db..f0f5e42 100644
 +                    }
 +                    working = scaled
 +                } else {
-+                    break // 灏哄宸叉棤娉曞啀缂╁皬
++                    break // 尺寸已无法再缩小
 +                }
 +            }
 +            bytes = encodeJpegBytes(working, quality)
          }
 -        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
-+        // 寮哄埗浣跨敤 JPEG 鏍煎紡锛屽洜涓哄緢澶氭彁渚涘晢涓嶆敮鎸?webp
++        // 强制使用 JPEG 格式，因为很多提供商不支持 webp
 +        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
 +        Pair(encoded, "image/jpeg")
      } finally {
