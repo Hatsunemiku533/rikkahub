@@ -55,7 +55,7 @@ jobs:
           cat > app/google-services.json <<'EOF'
           {"project_info":{"project_number":"1","project_id":"rikkahub-dummy-build","storage_bucket":""},"client":[{"client_info":{"mobilesdk_app_id":"1:1:android:1","android_client_info":{"package_name":"me.rerere.rikkahub"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummy"}]}],"configuration_version":"1"}
           EOF
-          cat > app/local.properties <<EOF
+          cat > local.properties <<EOF
           storeFile=app.key
           storePassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
