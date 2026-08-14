@@ -1,0 +1,175 @@
+name: Auto Build Patched RikkaHub
+
+on:
+  # 每天北京时间 10:37 自动检查官方是否有新版本
+  schedule:
+    - cron: "37 2 * * *"
+  # 也可以手动触发（可选：指定上游 tag，留空 = 自动取最新 release）
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "上游 tag（留空=自动取最新 release）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 心跳提交：保持仓库活跃，防止 GitHub 停掉定时任务（60 天无活动会被禁用）
+      - name: heartbeat
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > heartbeat.txt
+          git config user.name "auto-build"
+          git config user.email "auto-build@users.noreply.github.com"
+          git add heartbeat.txt
+          git commit -m "heartbeat $(date -u +%Y%m%d)" || echo "no change"
+          git push || echo "push failed"
+
+      - name: check upstream release
+        id: check
+        env:
+          REF_INPUT: ${{ github.event.inputs.ref }}
+        run: |
+          if [ -n "$REF_INPUT" ]; then
+            TAG="$REF_INPUT"
+          else
+            TAG=$(curl -s https://api.github.com/repos/rikkahub/rikkahub/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          LAST=$(cat last_built.txt 2>/dev/null || echo "")
+          if [ -n "$TAG" ] && [ "$TAG" = "$LAST" ] && [ -z "$REF_INPUT" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "already built $TAG, skip"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "new version to build: $TAG"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      # 直接从上游克隆指定 tag 的源码（fork 本身不需要同步）
+      - name: clone upstream source
+        run: |
+          git clone --depth 1 --branch "${{ needs.check.outputs.tag }}" --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
+
+      - name: apply patch
+        run: |
+          cd upstream
+          git apply --whitespace=nowarn ../patch/image-compress-500kb.patch
+          echo "patch applied"
+
+      - name: prepare signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          cd upstream
+          echo "$KEYSTORE_BASE64" | base64 -d > app/app.key
+          cp ../google-services.json app/google-services.json
+          cat > local.properties <<EOF
+          storeFile=app.key
+          storePassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          echo "signing prepared"
+
+      - name: install web-ui dependencies
+        working-directory: upstream/web-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: gradle build
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: auto-${{ needs.check.outputs.tag }}
+          name: RikkaHub ${{ needs.check.outputs.tag }} + 500KB 图片补丁
+          body: |
+            基于上游 `${{ needs.check.outputs.tag }}` 自动构建，附加图片自动压缩至 500KB 补丁。
+
+            ⚠️ 自编译签名版本，请先备份聊天数据，卸载官方版后安装（仅首次需要）。
+          files: upstream/app/build/outputs/apk/release/*.apk
+
+      - name: notify ntfy
+        if: success() && env.NTFY_TOPIC != ''
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          curl -s -H "Title: RikkaHub 新版本已构建好" \
+            -H "Tags: package" \
+            -H "Actions: view, 下载 APK, https://github.com/${{ github.repository }}/releases/latest" \
+            -d "基于上游 ${{ needs.check.outputs.tag }} 构建完成，含 500KB 图片压缩补丁。点「下载 APK」在手机浏览器下载安装。" \
+            "https://ntfy.sh/$NTFY_TOPIC"
+
+      - name: update last_built
+        run: |
+          echo "${{ needs.check.outputs.tag }}" > last_built.txt
+          git config user.name "auto-build"
+          git config user.email "auto-build@users.noreply.github.com"
+          git add last_built.txt
+          git commit -m "built ${{ needs.check.outputs.tag }}" || echo "no change"
+          git pull --rebase origin master || echo "rebase failed"
+          git push || echo "push failed"
+
+  fail_issue:
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "自动构建失败：${{ needs.check.outputs.tag }}" \
+            --body "上游 ${{ needs.check.outputs.tag }} 自动构建失败，补丁可能需要手动修复。构建日志：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --repo "${{ github.repository }}" || echo "issue create failed"

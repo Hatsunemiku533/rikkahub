@@ -1,0 +1,104 @@
+﻿diff --git a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
+index 91b80db..f0f5e42 100644
+--- a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
++++ b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
+@@ -18,6 +18,16 @@ private val supportedTypes = setOf(
+     "image/webp",
+ )
+ 
++// 鍥剧墖鍘嬬缉鐩爣锛氬彂閫佺粰妯″瀷鐨勫浘鐗囧帇缂╁埌 500KB 浠ュ唴锛堜笌 opencode 鐨勫浘鐗囧帇缂╃瓥鐣ヤ竴鑷达級
++private const val MAX_COMPRESSED_BYTES = 500_000L
++private const val TARGET_MAX_DIMENSION = 1600
++private const val TARGET_MAX_PIXELS = 4_000_000L
++private const val INITIAL_JPEG_QUALITY = 85
++private const val MIN_JPEG_QUALITY = 30
++private const val QUALITY_STEP = 15
++private const val SCALE_FACTOR = 0.75f
++private const val MAX_COMPRESS_ATTEMPTS = 12
++
+ data class EncodedImage(
+     val base64: String,
+     val mimeType: String
+@@ -115,10 +125,7 @@ fun UIMessagePart.Audio.encodeBase64(withPrefix: Boolean = true): Result<String>
+ }
+ 
+ private fun File.compressAndEncode(
+-    mimeType: String,
+-    maxDimension: Int = 10_000,
+-    maxPixels: Long = 16_000_000L,
+-    quality: Int = 85
++    mimeType: String
+ ): Pair<String, String> {
+     // GIF 淇濇寔鍘熸牱锛堝彲鑳芥槸鍔ㄥ浘锛?     if (mimeType == "image/gif") {
+@@ -134,23 +141,51 @@ private fun File.compressAndEncode(
+     options.inSampleSize = calculateImageInSampleSize(
+         width = options.outWidth,
+         height = options.outHeight,
+-        maxDimension = maxDimension,
+-        maxPixels = maxPixels
++        maxDimension = TARGET_MAX_DIMENSION,
++        maxPixels = TARGET_MAX_PIXELS
+     )
+     options.inJustDecodeBounds = false
+ 
+     val bitmap = BitmapFactory.decodeFile(absolutePath, options)
+         ?: throw IllegalArgumentException("Failed to decode image: $absolutePath")
+     val normalizedBitmap = normalizeByExif(bitmap)
++    var working = normalizedBitmap
+ 
+     return try {
+-        val byteArrayOutputStream = ByteArrayOutputStream()
+-        // 寮哄埗浣跨敤 JPEG 鏍煎紡锛屽洜涓哄緢澶氭彁渚涘晢涓嶆敮鎸?webp
+-        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
+-            normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)
++        var quality = INITIAL_JPEG_QUALITY
++        var bytes = encodeJpegBytes(working, quality)
++        var attempts = 0
++        // 寰幆鍘嬬缉鐩村埌 鈮?500KB锛氬厛闄?JPEG 璐ㄩ噺锛岃川閲忚Е搴曞悗绛夋瘮缂╁皬灏哄閲嶈瘯
++        while (bytes.size > MAX_COMPRESSED_BYTES && attempts < MAX_COMPRESS_ATTEMPTS) {
++            attempts++
++            if (quality > MIN_JPEG_QUALITY) {
++                quality -= QUALITY_STEP
++            } else {
++                quality = INITIAL_JPEG_QUALITY
++                val scaled = Bitmap.createScaledBitmap(
++                    working,
++                    (working.width * SCALE_FACTOR).toInt().coerceAtLeast(1),
++                    (working.height * SCALE_FACTOR).toInt().coerceAtLeast(1),
++                    true
++                )
++                if (scaled !== working) {
++                    if (working !== normalizedBitmap) {
++                        working.recycle()
++                    }
++                    working = scaled
++                } else {
++                    break // 灏哄宸叉棤娉曞啀缂╁皬
++                }
++            }
++            bytes = encodeJpegBytes(working, quality)
+         }
+-        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
++        // 寮哄埗浣跨敤 JPEG 鏍煎紡锛屽洜涓哄緢澶氭彁渚涘晢涓嶆敮鎸?webp
++        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
++        Pair(encoded, "image/jpeg")
+     } finally {
++        if (working !== normalizedBitmap) {
++            working.recycle()
++        }
+         if (normalizedBitmap !== bitmap) {
+             normalizedBitmap.recycle()
+         }
+@@ -158,6 +193,12 @@ private fun File.compressAndEncode(
+     }
+ }
+ 
++private fun encodeJpegBytes(bitmap: Bitmap, quality: Int): ByteArray {
++    val byteArrayOutputStream = ByteArrayOutputStream()
++    bitmap.compress(Bitmap.CompressFormat.JPEG, quality, byteArrayOutputStream)
++    return byteArrayOutputStream.toByteArray()
++}
++
+ private fun File.normalizeByExif(bitmap: Bitmap): Bitmap {
+     val orientation = runCatching {
+         ExifInterface(absolutePath).getAttributeInt(
