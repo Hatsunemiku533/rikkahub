@@ -1,9 +1,9 @@
 name: Auto Build Patched RikkaHub
 
 on:
-  # 每天北京时间 10:37 自动检查官方是否有新版本
+  # 每天北京时间 00:05 自动检查官方是否有新版本（UTC 16:05，避开整点高峰）
   schedule:
-    - cron: "37 2 * * *"
+    - cron: "5 16 * * *"
   # 也可以手动触发（可选：指定上游 tag，留空 = 自动取最新 release）
   workflow_dispatch:
     inputs:
