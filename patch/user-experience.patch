@@ -1,0 +1,239 @@
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/ai/transformers/PlaceholderTransformer.kt b/app/src/main/java/me/rerere/rikkahub/data/ai/transformers/PlaceholderTransformer.kt
+index e454749e..362025f3 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/ai/transformers/PlaceholderTransformer.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/ai/transformers/PlaceholderTransformer.kt
+@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.model.Assistant
+ import org.koin.core.component.KoinComponent
+ import org.koin.core.component.get
+ import java.time.LocalDate
++import java.time.LocalTime
+ import java.time.format.DateTimeFormatter
+ import java.time.format.FormatStyle
+ import java.time.temporal.Temporal
+@@ -62,6 +63,10 @@ object DefaultPlaceholderProvider : PlaceholderProvider {
+             LocalDate.now().toDateString()
+         }
+ 
++        placeholder("time", { Text(stringResource(R.string.placeholder_current_time)) }) {
++            LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
++        }
++
+         placeholder("model_id", { Text(stringResource(R.string.placeholder_model_id)) }) {
+             it.model.modelId
+         }
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt b/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
+index de2474ca..14f1e595 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
+@@ -110,6 +110,10 @@ data class MessageNode(
+     val id: Uuid = Uuid.random(),
+     val messages: List<UIMessage>,
+     val selectIndex: Int = 0,
++    // 该节点已被压缩：界面仍显示，但不发送给 AI
++    val compressed: Boolean = false,
++    // 该节点是压缩摘要：参与发送，但不参与后续压缩输入
++    val isSummary: Boolean = false,
+     @Transient
+     val isFavorite: Boolean = false,
+ ) {
+diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
+index cb44b494..3eca52d5 100644
+--- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
++++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
+@@ -74,6 +74,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+ import me.rerere.rikkahub.data.files.FilesManager
+ import me.rerere.rikkahub.data.model.Conversation
++import me.rerere.rikkahub.data.model.MessageNode
+ import me.rerere.rikkahub.data.model.Assistant
+ import me.rerere.rikkahub.data.model.AssistantAffectScope
+ import me.rerere.rikkahub.data.model.replaceRegexes
+@@ -513,11 +514,11 @@ class ChatService(
+                 settings = settings,
+                 model = model,
+                 processingStatus = session.processingStatus,
+-                messages = conversation.currentMessages.let {
++                messages = conversation.messageNodes.run {
+                     if (messageRange != null) {
+-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
++                        conversation.currentMessages.subList(messageRange.start, messageRange.endInclusive + 1)
+                     } else {
+-                        it
++                        filterNot { it.compressed }.map { it.messages[it.selectIndex] }
+                     }
+                 },
+                 assistant = assistant,
+@@ -858,21 +859,24 @@ class ChatService(
+         val providerHandler = providerManager.getProviderByType(provider)
+ 
+         val maxMessagesPerChunk = 256
+-        val allMessages = conversation.currentMessages
++        val nodes = conversation.messageNodes
+ 
+-        // Split messages into those to compress and those to keep
+-        val messagesToCompress: List<UIMessage>
++        // 摘要节点不参与压缩输入（旧摘要会被新摘要取代）
++        val contentNodes = nodes.filterNot { it.isSummary }
++
++        // 保留最近 N 条真实消息（摘要不计入保留窗口）
+         val messagesToKeep: List<UIMessage>
++        val nodesToCompress: List<MessageNode>
+ 
+-        if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
+-            messagesToCompress = allMessages.dropLast(keepRecentMessages)
+-            messagesToKeep = allMessages.takeLast(keepRecentMessages)
++        if (keepRecentMessages > 0 && contentNodes.size > keepRecentMessages) {
++            messagesToKeep = contentNodes.takeLast(keepRecentMessages).map { it.currentMessage }
++            nodesToCompress = contentNodes.dropLast(keepRecentMessages)
+         } else if (keepRecentMessages > 0) {
+             // Not enough messages to compress while keeping recent ones
+             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+         } else {
+-            messagesToCompress = allMessages
+             messagesToKeep = emptyList()
++            nodesToCompress = contentNodes
+         }
+ 
+         fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
+@@ -887,7 +891,7 @@ class ChatService(
+             val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 2000) }
+             val prompt = settings.compressPrompt.applyPlaceholders(
+                 "content" to contentToCompress,
+-                "target_tokens" to targetTokens.toString(),
++                "target_tokens" to if (targetTokens > 0) targetTokens.toString() else "unlimited (preserve all important information)",
+                 "additional_context" to if (additionalPrompt.isNotBlank()) {
+                     "Additional instructions from user: $additionalPrompt"
+                 } else "",
+@@ -905,16 +909,17 @@ class ChatService(
+         }
+ 
+         val compressedSummaries = coroutineScope {
+-            splitMessages(messagesToCompress)
++            splitMessages(nodesToCompress.map { it.currentMessage })
+                 .map { chunk -> async { compressMessages(chunk) } }
+                 .awaitAll()
+         }
+ 
+-        // Create new conversation with compressed history as multiple user messages + kept messages
++        // 新对话 = 新摘要节点 + 全部被压缩的原始节点（保留可见，但不再发送给 AI）+ 最近保留消息
+         val newMessageNodes = buildList {
+             compressedSummaries.forEach { summary ->
+-                add(UIMessage.user(summary).toMessageNode())
++                add(UIMessage.user(summary).toMessageNode().copy(isSummary = true))
+             }
++            addAll(nodesToCompress.map { it.copy(compressed = true) })
+             addAll(messagesToKeep.map { it.toMessageNode() })
+         }
+         val newConversation = conversation.copy(
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
+index f86d4cdd..614996c0 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
+@@ -39,7 +39,7 @@ fun CompressContextDialog(
+     var additionalPrompt by remember { mutableStateOf("") }
+     var selectedTokens by remember { mutableIntStateOf(2000) }
+     var keepRecentMessages by remember { mutableIntStateOf(32) }
+-    val tokenOptions = listOf(500, 1000, 2000, 4000)
++    val tokenOptions = listOf(500, 1000, 2000, 4000, -1)
+     var currentJob by remember { mutableStateOf<Job?>(null) }
+     val isLoading = currentJob?.isActive == true
+ 
+@@ -98,7 +98,11 @@ fun CompressContextDialog(
+                                     count = tokenOptions.size
+                                 )
+                             ) {
+-                                Text("$tokens")
++                                if (tokens < 0) {
++                                    Text(stringResource(R.string.chat_page_compress_unlimited))
++                                } else {
++                                    Text("$tokens")
++                                }
+                             }
+                         }
+                     }
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
+index a18dd69f..0e9d3abc 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
+@@ -136,6 +136,19 @@ fun ChatMessage(
+         horizontalAlignment = if (message.role == MessageRole.USER) Alignment.End else Alignment.Start,
+         verticalArrangement = Arrangement.spacedBy(4.dp)
+     ) {
++        if (node.compressed) {
++            Text(
++                text = stringResource(R.string.chat_message_compressed_tag),
++                style = MaterialTheme.typography.labelSmall,
++                color = MaterialTheme.colorScheme.outline
++            )
++        } else if (node.isSummary) {
++            Text(
++                text = stringResource(R.string.chat_message_summary_tag),
++                style = MaterialTheme.typography.labelSmall,
++                color = MaterialTheme.colorScheme.tertiary
++            )
++        }
+         if (!message.parts.isEmptyUIMessage()) {
+             Row(
+                 modifier = Modifier
+diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
+index 93d12bc5..2f1d1d20 100644
+--- a/app/src/main/res/values-zh/strings.xml
++++ b/app/src/main/res/values-zh/strings.xml
+@@ -232,6 +232,8 @@
+   <string name="chat_input_unsupported_file_type">不支持的文件类型：%s</string>
+   <string name="chat_input_file_read_failed">文件读取失败：%s</string>
+   <string name="chat_message_add_favorite">添加收藏</string>
++  <string name="chat_message_compressed_tag">已压缩 · 未发送给 AI</string>
++  <string name="chat_message_summary_tag">压缩摘要</string>
+   <string name="chat_message_remove_favorite">取消收藏</string>
+   <string name="chat_message_tool_approve">批准</string>
+   <string name="chat_message_tool_ask_questions">询问 %d 个问题</string>
+@@ -266,7 +268,8 @@
+   <string name="chat_page_compress_keep_recent">保留最近的消息</string>
+   <string name="chat_page_compress_not_enough_messages">消息数量不足，无法压缩。请减少保留的消息数量或添加更多消息。</string>
+   <string name="chat_page_compress_target_tokens">目标Token大小</string>
+-  <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>
++  <string name="chat_page_compress_unlimited">不限</string>
++  <string name="chat_page_compress_warning">⚠️ 压缩后原始消息仍会保留在界面中，但不再发送给 AI；最近的消息保持原样</string>
+   <string name="chat_page_compressing">正在压缩...</string>
+   <string name="chat_page_conversation_system_prompt">对话系统提示</string>
+   <string name="chat_page_conversation_system_prompt_clear">清除</string>
+@@ -464,6 +467,7 @@
+   <string name="placeholder_battery_level">电池电量</string>
+   <string name="placeholder_char">助手名称</string>
+   <string name="placeholder_current_date">日期</string>
++  <string name="placeholder_current_time">当前时间（时:分）</string>
+   <string name="placeholder_device_info">设备信息</string>
+   <string name="placeholder_locale">语言环境</string>
+   <string name="placeholder_model_id">模型ID</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 9d597cd2..5a4bda75 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -232,6 +232,8 @@
+   <string name="chat_input_unsupported_file_type">Unsupported file type: %s</string>
+   <string name="chat_input_file_read_failed">Failed to read file: %s</string>
+   <string name="chat_message_add_favorite">Add Favorite</string>
++  <string name="chat_message_compressed_tag">Compressed · not sent to AI</string>
++  <string name="chat_message_summary_tag">Compression summary</string>
+   <string name="chat_message_remove_favorite">Remove Favorite</string>
+   <string name="chat_message_tool_approve">Approve</string>
+   <string name="chat_message_tool_ask_questions">Ask %d questions</string>
+@@ -266,7 +268,8 @@
+   <string name="chat_page_compress_keep_recent">Keep recent messages</string>
+   <string name="chat_page_compress_not_enough_messages">Not enough messages to compress. Reduce the number of messages to keep or add more messages.</string>
+   <string name="chat_page_compress_target_tokens">Target Token Size</string>
+-  <string name="chat_page_compress_warning">⚠️ Compressing context will reset all messages in the current conversation</string>
++  <string name="chat_page_compress_unlimited">Unlimited</string>
++  <string name="chat_page_compress_warning">⚠️ Compressed messages stay visible but are not sent to the AI; recent messages are kept as-is</string>
+   <string name="chat_page_compressing">Compressing...</string>
+   <string name="chat_page_conversation_system_prompt">Conversation System Prompt</string>
+   <string name="chat_page_conversation_system_prompt_clear">Clear</string>
+@@ -469,6 +472,7 @@
+   <string name="placeholder_battery_level">Battery Level</string>
+   <string name="placeholder_char">Assistant Name</string>
+   <string name="placeholder_current_date">Date</string>
++  <string name="placeholder_current_time">Time (HH:mm)</string>
+   <string name="placeholder_device_info">Device Info</string>
+   <string name="placeholder_locale">Locale</string>
+   <string name="placeholder_model_id">Model ID</string>

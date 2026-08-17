@@ -98,6 +98,7 @@ jobs:
         run: |
           cd upstream
           git apply --whitespace=nowarn ../patch/image-compress-500kb.patch
+          git apply --whitespace=nowarn ../patch/user-experience.patch
           echo "patch applied"
 
       - name: prepare signing
@@ -131,9 +132,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: auto-${{ needs.check.outputs.tag }}
-          name: RikkaHub ${{ needs.check.outputs.tag }} + 500KB 图片补丁
+          allowUpdates: true
+          name: RikkaHub ${{ needs.check.outputs.tag }} + 增强补丁
           body: |
-            基于上游 `${{ needs.check.outputs.tag }}` 自动构建，附加图片自动压缩至 500KB 补丁。
+            基于上游 `${{ needs.check.outputs.tag }}` 自动构建，附加补丁：
+            1. 图片自动压缩至 500KB
+            2. 压缩对话支持「不限」目标大小
+            3. 压缩后原始消息保留可见，仅发送摘要+最近消息给 AI
+            4. 模式注入新增 `{{time}}` 变量
 
             ⚠️ 自编译签名版本，请先备份聊天数据，卸载官方版后安装（仅首次需要）。
           files: upstream/app/build/outputs/apk/release/app-arm64-v8a-release.apk
@@ -146,7 +152,7 @@ jobs:
           curl -s -H "Title: RikkaHub 新版本已构建好" \
             -H "Tags: package" \
             -H "Actions: view, 下载 APK, https://github.com/${{ github.repository }}/releases/latest" \
-            -d "基于上游 ${{ needs.check.outputs.tag }} 构建完成，含 500KB 图片压缩补丁。点「下载 APK」在手机浏览器下载安装。" \
+            -d "基于上游 ${{ needs.check.outputs.tag }} 构建完成，含 500KB 图片压缩、压缩保留原消息、{{time}} 变量。点「下载 APK」在手机浏览器下载安装。" \
             "https://ntfy.sh/$NTFY_TOPIC"
 
       - name: update last_built
