@@ -21,6 +21,42 @@ index e454749e..362025f3 100644
          placeholder("model_id", { Text(stringResource(R.string.placeholder_model_id)) }) {
              it.model.modelId
          }
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
+index 3dbd1d77..296fbdc0 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
+@@ -38,7 +38,7 @@ import me.rerere.rikkahub.utils.JsonInstant
+         WorkspaceEntity::class,
+         FolderEntity::class,
+     ],
+-    version = 24,
++    version = 25,
+     autoMigrations = [
+         AutoMigration(from = 1, to = 2),
+         AutoMigration(from = 2, to = 3),
+@@ -58,6 +58,7 @@ import me.rerere.rikkahub.utils.JsonInstant
+         AutoMigration(from = 21, to = 22),
+         AutoMigration(from = 22, to = 23, spec = Migration_22_23::class),
+         AutoMigration(from = 23, to = 24),
++        AutoMigration(from = 24, to = 25),
+     ]
+ )
+ @TypeConverters(TokenUsageConverter::class)
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt b/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
+index 6f0ba7f1..ae7aeb08 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
+@@ -28,5 +28,9 @@ data class MessageNodeEntity(
+     @ColumnInfo("messages")
+     val messages: String,  // JSON serialized List<UIMessage>
+     @ColumnInfo("select_index")
+-    val selectIndex: Int
++    val selectIndex: Int,
++    @ColumnInfo("compressed", defaultValue = "0")
++    val compressed: Boolean = false,
++    @ColumnInfo("is_summary", defaultValue = "0")
++    val isSummary: Boolean = false,
+ )
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt b/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
 index de2474ca..14f1e595 100644
 --- a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
@@ -36,8 +72,34 @@ index de2474ca..14f1e595 100644
      @Transient
      val isFavorite: Boolean = false,
  ) {
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt b/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
+index 6021ec3e..4eebdd9c 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
+@@ -457,7 +457,9 @@ class ConversationRepository(
+                             id = nodeId,
+                             messages = messages,
+                             selectIndex = entity.selectIndex,
+-                            isFavorite = favoriteNodeIds.contains(nodeId)
++                            isFavorite = favoriteNodeIds.contains(nodeId),
++                            compressed = entity.compressed,
++                            isSummary = entity.isSummary
+                         )
+                     )
+                 }
+@@ -474,7 +476,9 @@ class ConversationRepository(
+                 conversationId = conversationId,
+                 nodeIndex = index,
+                 messages = JsonInstant.encodeToString(node.messages),
+-                selectIndex = node.selectIndex
++                selectIndex = node.selectIndex,
++                compressed = node.compressed,
++                isSummary = node.isSummary
+             )
+         }
+         messageNodeDAO.insertAll(entities)
 diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-index cb44b494..049298fe 100644
+index cb44b494..4ace3fe7 100644
 --- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 @@ -74,6 +74,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -105,6 +167,28 @@ index cb44b494..049298fe 100644
                          updateConversation(conversationId, updatedConversation)
  
                          // 通知等边缘副作用由 ChatNotificationManager 消费；
+@@ -768,8 +800,8 @@ class ChatService(
+                 params = backgroundTextGenerationParams(model),
+             )
+ 
+-            // 生成完，conversation可能不是最新了，因此需要重新获取
+-            conversationRepo.getConversationById(conversation.id)?.let {
++            // 生成完，conversation可能不是最新了，因此需要重新获取（以内存态为准，避免覆盖压缩标记）
++            getConversationFlow(conversation.id).value.let {
+                 saveConversation(
+                     conversationId,
+                     it.copy(title = result.message.toText().trim())
+@@ -823,8 +855,8 @@ class ChatService(
+                 result.message.toText().split("\n").map { it.trim() }
+                     .filter { it.isNotBlank() }
+ 
+-            val latestConversation = conversationRepo.getConversationById(conversationId)
+-                ?: sessions[conversationId]?.state?.value
++            val latestConversation = sessions[conversationId]?.state?.value
++                ?: conversationRepo.getConversationById(conversationId)
+                 ?: conversation
+             saveConversation(
+                 conversationId,
 @@ -858,21 +890,24 @@ class ChatService(
          val providerHandler = providerManager.getProviderByType(provider)
  
