@@ -102,14 +102,6 @@ diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/s
 index cb44b494..4ace3fe7 100644
 --- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-@@ -74,6 +74,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
- import me.rerere.rikkahub.data.datastore.getCurrentChatModel
- import me.rerere.rikkahub.data.files.FilesManager
- import me.rerere.rikkahub.data.model.Conversation
-+import me.rerere.rikkahub.data.model.MessageNode
- import me.rerere.rikkahub.data.model.Assistant
- import me.rerere.rikkahub.data.model.AssistantAffectScope
- import me.rerere.rikkahub.data.model.replaceRegexes
 @@ -513,11 +514,11 @@ class ChatService(
                  settings = settings,
                  model = model,
