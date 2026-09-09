@@ -160,7 +160,7 @@ index cb44b494..4ace3fe7 100644
  
                          // 通知等边缘副作用由 ChatNotificationManager 消费；
 @@ -768,8 +800,8 @@ class ChatService(
-                 params = backgroundTextGenerationParams(model),
+                 params = backgroundTextGenerationParams(model, settings.fastModelReasoningLevel),
              )
  
 -            // 生成完，conversation可能不是最新了，因此需要重新获取
