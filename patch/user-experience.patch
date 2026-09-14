@@ -386,6 +386,16 @@ index a18dd69f..0e9d3abc 100644
          if (!message.parts.isEmptyUIMessage()) {
              Row(
                  modifier = Modifier
+@@ -195,7 +208,8 @@ fun ChatMessage(
+         val showActions = if (lastMessage) {
+             !loading
+         } else {
+-            message.parts.isEmptyUIMessage().not()
++            // 空回复但存在多分支(roll历史)时仍显示操作栏，否则切到空分支后无法切回
++            message.parts.isEmptyUIMessage().not() || node.messages.size > 1
+         }
+ 
+         AnimatedVisibility(
 diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
 index 93d12bc5..39928c13 100644
 --- a/app/src/main/res/values-zh/strings.xml
