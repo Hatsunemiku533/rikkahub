@@ -1,0 +1,355 @@
+diff --git a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
+index 91b80db..a039d32 100644
+--- a/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
++++ b/ai/src/main/java/me/rerere/ai/util/FileEncoder.kt
+@@ -18,6 +18,25 @@ private val supportedTypes = setOf(
+     "image/webp",
+ )
+ 
++/**
++ * 图片压缩配置。默认值与原有行为完全一致（最长边 10000px / 1600 万像素以内，JPEG 质量 85，不限制文件大小）。
++ * [maxBytes] 非 null 时，编码结果会循环降质量/缩尺寸，直至文件大小不超过该值（GIF 动图除外）。
++ */
++data class ImageCompressConfig(
++    val maxDimension: Int = 10_000,
++    val maxPixels: Long = 16_000_000L,
++    val maxBytes: Long? = null,
++    val initialQuality: Int = 85,
++    val minQuality: Int = 30,
++    val qualityStep: Int = 15,
++    val scaleFactor: Float = 0.75f,
++    val maxAttempts: Int = 12,
++)
++
++// 当前生效的图片压缩配置，由 app 模块在设置变更时同步（默认不限制文件大小）
++@Volatile
++var currentImageCompressConfig: ImageCompressConfig = ImageCompressConfig()
++
+ data class EncodedImage(
+     val base64: String,
+     val mimeType: String
+@@ -115,16 +134,15 @@ fun UIMessagePart.Audio.encodeBase64(withPrefix: Boolean = true): Result<String>
+ }
+ 
+ private fun File.compressAndEncode(
+-    mimeType: String,
+-    maxDimension: Int = 10_000,
+-    maxPixels: Long = 16_000_000L,
+-    quality: Int = 85
++    mimeType: String
+ ): Pair<String, String> {
+     // GIF 保持原样（可能是动图）
+     if (mimeType == "image/gif") {
+         return Pair(encodeToBase64Streaming(), mimeType)
+     }
+ 
++    val config = currentImageCompressConfig
++
+     // 读取图片尺寸
+     val options = BitmapFactory.Options().apply {
+         inJustDecodeBounds = true
+@@ -134,23 +152,52 @@ private fun File.compressAndEncode(
+     options.inSampleSize = calculateImageInSampleSize(
+         width = options.outWidth,
+         height = options.outHeight,
+-        maxDimension = maxDimension,
+-        maxPixels = maxPixels
++        maxDimension = config.maxDimension,
++        maxPixels = config.maxPixels
+     )
+     options.inJustDecodeBounds = false
+ 
+     val bitmap = BitmapFactory.decodeFile(absolutePath, options)
+         ?: throw IllegalArgumentException("Failed to decode image: $absolutePath")
+     val normalizedBitmap = normalizeByExif(bitmap)
++    var working = normalizedBitmap
+ 
+     return try {
+-        val byteArrayOutputStream = ByteArrayOutputStream()
+-        // 强制使用 JPEG 格式，因为很多提供商不支持 webp
+-        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
+-            normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)
++        var quality = config.initialQuality
++        var bytes = encodeJpegBytes(working, quality)
++        var attempts = 0
++        val maxBytes = config.maxBytes
++        // 设置了文件大小上限时：先降 JPEG 质量，质量触底后等比缩小尺寸重试
++        while (maxBytes != null && bytes.size > maxBytes && attempts < config.maxAttempts) {
++            attempts++
++            if (quality > config.minQuality) {
++                quality -= config.qualityStep
++            } else {
++                quality = config.initialQuality
++                val scaled = Bitmap.createScaledBitmap(
++                    working,
++                    (working.width * config.scaleFactor).toInt().coerceAtLeast(1),
++                    (working.height * config.scaleFactor).toInt().coerceAtLeast(1),
++                    true
++                )
++                if (scaled !== working) {
++                    if (working !== normalizedBitmap) {
++                        working.recycle()
++                    }
++                    working = scaled
++                } else {
++                    break // 尺寸已无法再缩小
++                }
++            }
++            bytes = encodeJpegBytes(working, quality)
+         }
+-        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
++        // 强制使用 JPEG 格式，因为很多提供商不支持 webp
++        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
++        Pair(encoded, "image/jpeg")
+     } finally {
++        if (working !== normalizedBitmap) {
++            working.recycle()
++        }
+         if (normalizedBitmap !== bitmap) {
+             normalizedBitmap.recycle()
+         }
+@@ -158,6 +205,12 @@ private fun File.compressAndEncode(
+     }
+ }
+ 
++private fun encodeJpegBytes(bitmap: Bitmap, quality: Int): ByteArray {
++    val byteArrayOutputStream = ByteArrayOutputStream()
++    bitmap.compress(Bitmap.CompressFormat.JPEG, quality, byteArrayOutputStream)
++    return byteArrayOutputStream.toByteArray()
++}
++
+ private fun File.normalizeByExif(bitmap: Bitmap): Bitmap {
+     val orientation = runCatching {
+         ExifInterface(absolutePath).getAttributeInt(
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
+index 561a581..d082c05 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
+@@ -25,6 +25,8 @@ import me.rerere.ai.core.MessageRole
+ import me.rerere.ai.core.ReasoningLevel
+ import me.rerere.ai.provider.Model
+ import me.rerere.ai.provider.ProviderSetting
++import me.rerere.ai.util.ImageCompressConfig
++import me.rerere.ai.util.currentImageCompressConfig
+ import me.rerere.rikkahub.AppScope
+ import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
+ import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
+@@ -148,6 +150,10 @@ class SettingsStore(
+         // 备份提醒
+         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
+ 
++        // 图片发送压缩
++        val IMAGE_COMPRESS_ENABLED = booleanPreferencesKey("image_compress_enabled")
++        val IMAGE_COMPRESS_MAX_BYTES = intPreferencesKey("image_compress_max_bytes")
++
+         // 统计
+         val LAUNCH_COUNT = intPreferencesKey("launch_count")
+ 
+@@ -218,6 +224,8 @@ class SettingsStore(
+                 preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+                 preferences[LAUNCH_COUNT] = settings.launchCount
+                 preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
++                preferences[IMAGE_COMPRESS_ENABLED] = settings.imageCompressEnabled
++                preferences[IMAGE_COMPRESS_MAX_BYTES] = settings.imageCompressMaxBytes.coerceIn(100, 5000)
+             }
+         }
+     }
+@@ -315,6 +323,8 @@ class SettingsStore(
+                 } ?: BackupReminderConfig(),
+                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
+                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
++                imageCompressEnabled = preferences[IMAGE_COMPRESS_ENABLED] == true,
++                imageCompressMaxBytes = preferences[IMAGE_COMPRESS_MAX_BYTES]?.coerceIn(100, 5000) ?: 500,
+             )
+         }
+         .map {
+@@ -411,6 +421,9 @@ class SettingsStore(
+         .onEach {
+             get<PebbleEngine>().templateCache.invalidateAll()
+         }
++        .onEach {
++            currentImageCompressConfig = it.toImageCompressConfig()
++        }
+ 
+     val settingsFlow = settingsFlowRaw
+         .distinctUntilChanged()
+@@ -422,6 +435,7 @@ class SettingsStore(
+             return
+         }
+         settingsFlow.value = settings
++        currentImageCompressConfig = settings.toImageCompressConfig()
+         persistSettings(dataStore, settings)
+     }
+ 
+@@ -566,6 +580,8 @@ data class Settings(
+     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+     val launchCount: Int = 0,
+     val sponsorAlertDismissedAt: Int = 0,
++    val imageCompressEnabled: Boolean = false,
++    val imageCompressMaxBytes: Int = 500,
+ ) {
+     companion object {
+         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储
+@@ -573,6 +589,18 @@ data class Settings(
+     }
+ }
+ 
++// 将设置转换为 ai 模块的图片压缩配置；未开启时保持默认行为（不限制文件大小）
++fun Settings.toImageCompressConfig(): ImageCompressConfig =
++    if (imageCompressEnabled) {
++        ImageCompressConfig(
++            maxDimension = 1600,
++            maxPixels = 4_000_000L,
++            maxBytes = imageCompressMaxBytes.coerceIn(100, 5000) * 1024L,
++        )
++    } else {
++        ImageCompressConfig()
++    }
++
+ @Serializable
+ data class NetworkSetting(
+     val userAgent: String = "",
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
+index 823358f..bc74096 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
+@@ -30,6 +30,7 @@ import me.rerere.rikkahub.R
+ import me.rerere.rikkahub.data.datastore.DisplaySetting
+ import me.rerere.rikkahub.ui.components.nav.BackButton
+ import me.rerere.rikkahub.ui.components.ui.CardGroup
++import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
+ import me.rerere.rikkahub.ui.hooks.rememberSharedPreferenceBoolean
+ import me.rerere.rikkahub.ui.theme.CustomColors
+ import me.rerere.rikkahub.utils.plus
+@@ -262,6 +263,41 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
+                 }
+             }
+ 
++            item {
++                CardGroup(
++                    modifier = Modifier.padding(horizontal = 8.dp),
++                    title = { Text(stringResource(R.string.setting_page_image_compress_settings)) },
++                ) {
++                    item(
++                        headlineContent = { Text(stringResource(R.string.setting_general_page_image_compress_title)) },
++                        supportingContent = { Text(stringResource(R.string.setting_general_page_image_compress_desc)) },
++                        trailingContent = {
++                            Switch(
++                                checked = settings.imageCompressEnabled,
++                                onCheckedChange = {
++                                    vm.updateSettings(settings.copy(imageCompressEnabled = it))
++                                }
++                            )
++                        },
++                    )
++                    if (settings.imageCompressEnabled) {
++                        item(
++                            headlineContent = { Text(stringResource(R.string.setting_general_page_image_compress_max_size_title)) },
++                            supportingContent = {
++                                OutlinedNumberInput(
++                                    value = settings.imageCompressMaxBytes,
++                                    onValueChange = {
++                                        vm.updateSettings(settings.copy(imageCompressMaxBytes = it))
++                                    },
++                                    modifier = Modifier.fillMaxWidth(),
++                                    label = stringResource(R.string.setting_general_page_image_compress_max_size_title),
++                                )
++                            },
++                        )
++                    }
++                }
++            }
++
+             item {
+                 CardGroup(
+                     modifier = Modifier.padding(horizontal = 8.dp),
+diff --git a/app/src/main/res/values-ja/strings.xml b/app/src/main/res/values-ja/strings.xml
+index ff7810c..ada37c3 100644
+--- a/app/src/main/res/values-ja/strings.xml
++++ b/app/src/main/res/values-ja/strings.xml
+@@ -1104,6 +1104,10 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
+   <string name="setting_page_preferences_notification_desc">アップデート通知、メッセージ生成通知</string>
+   <string name="setting_page_preferences_general">一般</string>
+   <string name="setting_page_preferences_general_desc">操作動作、スクロール、入力設定</string>
++  <string name="setting_page_image_compress_settings">画像圧縮</string>
++  <string name="setting_general_page_image_compress_title">指定サイズに圧縮</string>
++  <string name="setting_general_page_image_compress_desc">送信前に画像を指定サイズ（KB）以内に圧縮します。アップロードが小さくなり応答が速くなります。</string>
++  <string name="setting_general_page_image_compress_max_size_title">サイズ上限（KB）</string>
+   <string name="setting_page_preferences_ui">UI設定</string>
+   <string name="setting_page_preferences_ui_desc">メッセージ表示、フォント、コードブロック</string>
+   <string name="skills_page_import_from_file">ファイルからインポート</string>
+diff --git a/app/src/main/res/values-ko-rKR/strings.xml b/app/src/main/res/values-ko-rKR/strings.xml
+index 1e6a846..9e76743 100644
+--- a/app/src/main/res/values-ko-rKR/strings.xml
++++ b/app/src/main/res/values-ko-rKR/strings.xml
+@@ -1104,6 +1104,10 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네
+   <string name="setting_page_preferences_notification_desc">업데이트 알림, 메시지 생성 알림</string>
+   <string name="setting_page_preferences_general">일반</string>
+   <string name="setting_page_preferences_general_desc">상호작용 방식, 스크롤, 입력 설정</string>
++  <string name="setting_page_image_compress_settings">이미지 압축</string>
++  <string name="setting_general_page_image_compress_title">지정된 크기로 압축</string>
++  <string name="setting_general_page_image_compress_desc">전송 전 이미지를 지정된 크기(KB) 이하로 압축합니다. 업로드가 작아지고 응답이 빨라집니다.</string>
++  <string name="setting_general_page_image_compress_max_size_title">크기 상한(KB)</string>
+   <string name="setting_page_preferences_ui">UI 환경설정</string>
+   <string name="setting_page_preferences_ui_desc">메시지 표시, 글꼴, 코드 블록</string>
+   <string name="skills_page_import_from_file">파일에서 가져오기</string>
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index 0cb455b..011fd5f 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -1104,6 +1104,10 @@
+   <string name="setting_page_preferences_notification_desc">Уведомления об обновлениях и генерации сообщений</string>
+   <string name="setting_page_preferences_general">Общие</string>
+   <string name="setting_page_preferences_general_desc">Поведение взаимодействия, прокрутка, настройки ввода</string>
++  <string name="setting_page_image_compress_settings">Сжатие изображений</string>
++  <string name="setting_general_page_image_compress_title">Сжимать до указанного размера</string>
++  <string name="setting_general_page_image_compress_desc">Сжимать изображения до указанного размера (КБ) перед отправкой модели. Меньший размер ускоряет ответы и снижает риск отклонения запроса.</string>
++  <string name="setting_general_page_image_compress_max_size_title">Лимит размера (КБ)</string>
+   <string name="setting_page_preferences_ui">Настройки интерфейса</string>
+   <string name="setting_page_preferences_ui_desc">Отображение сообщений, шрифты, блоки кода</string>
+   <string name="skills_page_import_from_file">Импортировать из файла</string>
+diff --git a/app/src/main/res/values-zh-rTW/strings.xml b/app/src/main/res/values-zh-rTW/strings.xml
+index 1f0fd2f..ccd3175 100644
+--- a/app/src/main/res/values-zh-rTW/strings.xml
++++ b/app/src/main/res/values-zh-rTW/strings.xml
+@@ -1102,6 +1102,10 @@
+   <string name="setting_page_preferences_notification_desc">更新提醒、訊息產生通知</string>
+   <string name="setting_page_preferences_general">一般</string>
+   <string name="setting_page_preferences_general_desc">互動行為、捲動、輸入設定</string>
++  <string name="setting_page_image_compress_settings">傳送圖片壓縮</string>
++  <string name="setting_general_page_image_compress_title">壓縮到指定大小</string>
++  <string name="setting_general_page_image_compress_desc">傳送前將圖片壓縮到指定大小（KB）以內。上傳更小、回覆更快，也能避免部分上游拒絕大圖。</string>
++  <string name="setting_general_page_image_compress_max_size_title">大小上限（KB）</string>
+   <string name="setting_page_preferences_ui">UI 偏好設定</string>
+   <string name="setting_page_preferences_ui_desc">訊息顯示、字型、程式碼區塊</string>
+   <string name="skills_page_import_from_file">從檔案匯入</string>
+diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
+index 5392d2c..8601eb8 100644
+--- a/app/src/main/res/values-zh/strings.xml
++++ b/app/src/main/res/values-zh/strings.xml
+@@ -1141,6 +1141,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
+   <string name="setting_page_preferences_notification_desc">更新提醒、消息生成通知</string>
+   <string name="setting_page_preferences_general">常规</string>
+   <string name="setting_page_preferences_general_desc">交互行为、滚动、输入设置</string>
++  <string name="setting_page_image_compress_settings">发送图片压缩</string>
++  <string name="setting_general_page_image_compress_title">压缩到指定大小</string>
++  <string name="setting_general_page_image_compress_desc">发送前将图片压缩到指定大小（KB）以内。上传更小，回复更快，也能避免部分上游拒绝大图。</string>
++  <string name="setting_general_page_image_compress_max_size_title">大小上限（KB）</string>
+   <string name="setting_page_preferences_ui">界面偏好设置</string>
+   <string name="setting_page_preferences_ui_desc">消息显示、字体、代码块</string>
+   <string name="skills_page_import_from_file">从文件导入</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 42b6417..7ed1b8c 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -846,6 +846,10 @@
+   <string name="setting_page_preferences_notification_desc">Update alerts, message generation notifications</string>
+   <string name="setting_page_preferences_general">General</string>
+   <string name="setting_page_preferences_general_desc">Interaction behavior, scrolling, input settings</string>
++  <string name="setting_page_image_compress_settings">Image Compression</string>
++  <string name="setting_general_page_image_compress_title">Compress images to a size limit</string>
++  <string name="setting_general_page_image_compress_desc">Compress images before sending them to models. Smaller uploads speed up responses and avoid rejection by providers with request size limits.</string>
++  <string name="setting_general_page_image_compress_max_size_title">Size limit (KB)</string>
+   <string name="setting_page_preferences_ui">UI Preferences</string>
+   <string name="setting_page_preferences_ui_desc">Message display, fonts, code blocks</string>
+   <string name="setting_page_preferences_network">Network</string>
