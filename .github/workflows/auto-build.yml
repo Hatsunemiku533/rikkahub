@@ -97,7 +97,7 @@ jobs:
       - name: apply patch
         run: |
           cd upstream
-          git apply --whitespace=nowarn ../patch/image-compress-500kb.patch
+          git apply --whitespace=nowarn ../patch/image-compress.patch
           git apply --whitespace=nowarn ../patch/user-experience.patch
           echo "patch applied"
 
