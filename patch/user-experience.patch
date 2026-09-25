@@ -172,10 +172,19 @@ index ae4ffa1..4b636b6 100644
          messageNodeDAO.insertAll(entities)
 
 diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-index a0c5b8e..8cbbe90 100644
+index a0c5b8e..eec3513 100644
 --- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-@@ -720,12 +720,14 @@ class ChatService(
+@@ -15,6 +15,8 @@ import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.completeWith
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.MutableSharedFlow
++import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.sync.withLock
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.SharedFlow
+ import kotlinx.coroutines.flow.StateFlow
+@@ -720,12 +722,14 @@ class ChatService(
                  settings = settings,
                  model = model,
                  processingStatus = session.processingStatus,
@@ -196,7 +205,7 @@ index a0c5b8e..8cbbe90 100644
                  },
                  assistant = assistant,
                  conversationId = conversationId,
-@@ -767,8 +769,91 @@ class ChatService(
+@@ -767,8 +771,91 @@ class ChatService(
              }.collect { chunk ->
                  when (chunk) {
                      is GenerationChunk.Messages -> {
@@ -290,7 +299,7 @@ index a0c5b8e..8cbbe90 100644
                          updateConversation(conversationId, updatedConversation)
  
                          // 通知等边缘副作用由 ChatNotificationManager 消费；
-@@ -917,8 +1002,8 @@ class ChatService(
+@@ -917,8 +1004,8 @@ class ChatService(
                  params = backgroundTextGenerationParams(model, conversationId, settings.fastModelReasoningLevel),
              )
  
@@ -301,7 +310,7 @@ index a0c5b8e..8cbbe90 100644
                  saveConversation(
                      conversationId,
                      it.copy(title = result.message.toText().trim())
-@@ -972,8 +1057,8 @@ class ChatService(
+@@ -972,8 +1059,8 @@ class ChatService(
                  result.message.toText().split("\n").map { it.trim() }
                      .filter { it.isNotBlank() }
  
@@ -312,7 +321,30 @@ index a0c5b8e..8cbbe90 100644
                  ?: conversation
              saveConversation(
                  conversationId,
-@@ -1007,21 +1092,24 @@ class ChatService(
+@@ -990,6 +1077,10 @@ class ChatService(
+ 
+     // ---- 压缩对话历史 ----
+ 
++    // 2026-09-25 压缩互斥：防止同一对话并发压缩；配合下方"压缩时重读最新内存态"，
++    // 消除双重压缩+删除摘要交错时用陈旧快照覆盖会话状态的竞态（当日 trplay21 事故根因）
++    private val compressionMutexes = ConcurrentHashMap<Uuid, Mutex>()
++
+     suspend fun compressConversation(
+         conversationId: Uuid,
+         conversation: Conversation,
+@@ -997,6 +1088,11 @@ class ChatService(
+         targetTokens: Int,
+         keepRecentMessages: Int = 32
+     ): Result<Unit> = runCatching {
++      compressionMutexes.getOrPut(conversationId) { Mutex() }.withLock {
++        // 不再使用 UI 传入的快照（可能陈旧），重读最新内存态；会话被回收为空时回退到调用方传值
++        val conversation = getConversationFlow(conversationId).value
++            .takeIf { it.messageNodes.isNotEmpty() }
++            ?: conversation
+         val settings = settingsStore.settingsFlow.first()
+         val model = settings.findModelById(settings.compressModelId)
+             ?: settings.getCurrentChatModel()
+@@ -1007,21 +1103,24 @@ class ChatService(
          val providerHandler = providerManager.getProviderByType(provider)
  
          val maxMessagesPerChunk = 256
@@ -344,7 +376,7 @@ index a0c5b8e..8cbbe90 100644
          }
  
          fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
-@@ -1036,7 +1124,7 @@ class ChatService(
+@@ -1036,7 +1135,7 @@ class ChatService(
              val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 2000) }
              val prompt = settings.compressPrompt.applyPlaceholders(
                  "content" to contentToCompress,
@@ -353,7 +385,7 @@ index a0c5b8e..8cbbe90 100644
                  "additional_context" to if (additionalPrompt.isNotBlank()) {
                      "Additional instructions from user: $additionalPrompt"
                  } else "",
-@@ -1054,16 +1142,17 @@ class ChatService(
+@@ -1054,16 +1153,17 @@ class ChatService(
          }
  
          val compressedSummaries = coroutineScope {
@@ -374,6 +406,14 @@ index a0c5b8e..8cbbe90 100644
              addAll(messagesToKeep.map { it.toMessageNode() })
          }
          val newConversation = conversation.copy(
+@@ -1072,6 +1172,7 @@ class ChatService(
+         )
+ 
+         saveConversation(conversationId, newConversation)
++      }
+     }
+ 
+     // ---- 对话状态更新 ----
 
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
 index f86d4cd..b0c6fa9 100644
@@ -489,6 +529,7 @@ index 9d597cd2..c830b232 100644
    <string name="placeholder_device_info">Device Info</string>
    <string name="placeholder_locale">Locale</string>
    <string name="placeholder_model_id">Model ID</string>
+
 
 diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
 index 93d12bc5..39928c13 100644
