@@ -118,6 +118,22 @@ jobs:
           EOF
           echo "signing prepared"
 
+      # JVM tests use the debug variant. Keep the release Firebase configuration unchanged.
+      - name: prepare debug test Google Services config
+        run: |
+          python3 - <<'PYDEBUG'
+          import json
+          from pathlib import Path
+          app = Path("upstream/app")
+          config = json.loads((app / "google-services.json").read_text())
+          for client in config.get("client", []):
+              info = client["client_info"]["android_client_info"]
+              if not info["package_name"].endswith(".debug"):
+                  info["package_name"] += ".debug"
+          (app / "src/debug").mkdir(parents=True, exist_ok=True)
+          (app / "src/debug/google-services.json").write_text(json.dumps(config))
+          PYDEBUG
+
       - name: install web-ui dependencies
         working-directory: upstream/web-ui
         run: pnpm install --frozen-lockfile
@@ -126,7 +142,7 @@ jobs:
         working-directory: upstream
         run: |
           chmod +x gradlew
-          ./gradlew :app:testReleaseUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --no-daemon
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --no-daemon
           ./gradlew assembleRelease --no-daemon
 
       - name: publish release
