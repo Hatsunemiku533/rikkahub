@@ -126,6 +126,7 @@ jobs:
         working-directory: upstream
         run: |
           chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --no-daemon
           ./gradlew assembleRelease --no-daemon
 
       - name: publish release
