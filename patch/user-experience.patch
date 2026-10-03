@@ -165,7 +165,7 @@ index ad9761a..01b6877 100644
          }
          messageNodeDAO.insertAll(entities)
 diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-index 1022dad..2250cc2 100644
+index 1022dad..34381bb 100644
 --- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
 @@ -15,6 +15,8 @@ import kotlinx.coroutines.coroutineScope
@@ -309,7 +309,7 @@ index 1022dad..2250cc2 100644
                  "additional_context" to if (additionalPrompt.isNotBlank()) {
                      "Additional instructions from user: $additionalPrompt"
                  } else "",
-@@ -992,25 +1005,24 @@ class ChatService(
+@@ -992,25 +1005,25 @@ class ChatService(
          }
  
          val compressedSummaries = coroutineScope {
@@ -342,6 +342,7 @@ index 1022dad..2250cc2 100644
 +        // State was already committed above; saveConversation would reapply a snapshot after an IO suspension.
 +        if (exists) conversationRepo.updateConversation(updated) else conversationRepo.insertConversation(updated)
 +        dispatchNextQueuedMessage(conversationId)
++        Unit
 +      }
 +      }
 +    }.onFailure { if (it is CancellationException) throw it }
@@ -350,7 +351,7 @@ index 1022dad..2250cc2 100644
  
 diff --git a/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt b/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt
 new file mode 100644
-index 0000000..dfd23a5
+index 0000000..e59b094
 --- /dev/null
 +++ b/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt
 @@ -0,0 +1,57 @@
@@ -407,7 +408,7 @@ index 0000000..dfd23a5
 +    }
 +    return current.copy(
 +        messageNodes = summaries.map { UIMessage.user(it).toMessageNode().copy(isSummary = true) } +
-+            compressed.map { it.copy(compressed = true) } + kept,
++            compressed.map { it.copy(compressed = true) } + kept.map { it.copy(compressed = false) },
 +        chatSuggestions = emptyList(),
 +    )
 +}
@@ -934,10 +935,10 @@ index 2827362..3d4aef1 100644
    <string name="placeholder_model_id">Model ID</string>
 diff --git a/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt b/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt
 new file mode 100644
-index 0000000..2d0422c
+index 0000000..e0130f3
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,75 @@
 +package me.rerere.rikkahub.service
 +
 +import me.rerere.ai.ui.UIMessage
@@ -951,6 +952,15 @@ index 0000000..2d0422c
 +
 +class PatchedHistoryTest {
 +    private fun conversation(nodes: List<MessageNode>) = Conversation.ofId(Uuid.random(), messages = nodes)
++
++    @Test
++    fun `increasing recent window reactivates kept archived nodes without losing branches`() {
++        val old = UIMessage.user("old").toMessageNode().copy(compressed = true)
++        val recent = MessageNode(messages = listOf(UIMessage.user("A"), UIMessage.user("B")), selectIndex = 1, compressed = true)
++        val snapshot = conversation(listOf(old, recent))
++        val result = finishPatchedCompression(snapshot, snapshot, listOf("summary"), listOf(old), listOf(recent))
++        assertEquals(recent.copy(compressed = false), result.messageNodes.last())
++    }
 +
 +    @Test
 +    fun `compression retains recent node identity alternatives and favorites`() {
