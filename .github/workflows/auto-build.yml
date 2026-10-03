@@ -1,20 +1,39 @@
 name: Auto Build Patched RikkaHub
 
 on:
-  # 每天北京时间 00:05 自动检查官方是否有新版本（UTC 16:05，避开整点高峰）
   schedule:
     - cron: "5 16 * * *"
-  # 也可以手动触发（可选：指定上游 tag，留空 = 自动取最新 release）
+  push:
+    branches: [master]
+    paths: ['patch/**', 'scripts/**', '.github/workflows/auto-build.yml']
   workflow_dispatch:
     inputs:
       ref:
-        description: "上游 tag（留空=自动取最新 release）"
+        description: "上游 tag（留空=最新 release；手动运行强制重建）"
         required: false
         default: ""
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ""
+    secrets:
+      KEYSTORE_BASE64:
+        required: true
+      KEY_PASSWORD:
+        required: true
+      KEY_ALIAS:
+        required: true
+      NTFY_TOPIC:
+        required: false
 
 permissions:
   contents: write
   issues: write
+
+concurrency:
+  group: patched-rikkahub-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -22,38 +41,38 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       tag: ${{ steps.check.outputs.tag }}
+      fingerprint: ${{ steps.check.outputs.fingerprint }}
     steps:
       - uses: actions/checkout@v4
-
-      # 心跳提交：保持仓库活跃，防止 GitHub 停掉定时任务（60 天无活动会被禁用）
+        with:
+          fetch-depth: 0
       - name: heartbeat
+        if: github.event_name == 'schedule'
         run: |
           date -u +"%Y-%m-%dT%H:%M:%SZ" > heartbeat.txt
           git config user.name "auto-build"
           git config user.email "auto-build@users.noreply.github.com"
           git add heartbeat.txt
-          git commit -m "heartbeat $(date -u +%Y%m%d)" || echo "no change"
-          git push || echo "push failed"
-
+          if ! git diff --cached --quiet; then
+            git commit -m "heartbeat $(date -u +%Y%m%d)"
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
       - name: check upstream release
         id: check
         env:
-          REF_INPUT: ${{ github.event.inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+          REF_INPUT: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ -n "$REF_INPUT" ]; then
-            TAG="$REF_INPUT"
-          else
-            TAG=$(curl -s https://api.github.com/repos/rikkahub/rikkahub/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+          set -euo pipefail
+          TAG="$REF_INPUT"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api repos/rikkahub/rikkahub/releases/latest --jq '.tag_name')
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          LAST=$(cat last_built.txt 2>/dev/null || echo "")
-          if [ -n "$TAG" ] && [ "$TAG" = "$LAST" ] && [ -z "$REF_INPUT" ]; then
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "already built $TAG, skip"
-          else
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "new version to build: $TAG"
-          fi
+          FORCE=()
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then FORCE=(--force); fi
+          python3 scripts/build-state.py --tag "$TAG" --output "$GITHUB_OUTPUT" "${FORCE[@]}"
 
   build:
     needs: check
@@ -62,137 +81,153 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-
+      - name: clone upstream source
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          git clone --depth 1 --branch "$UPSTREAM_TAG" --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
+          echo "Upstream source: $(git -C upstream rev-parse HEAD)"
+      - name: apply patch
+        run: bash scripts/apply-patches.sh upstream
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 11
-
       - name: Set up Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: web-ui/pnpm-lock.yaml
-
+          cache-dependency-path: upstream/web-ui/pnpm-lock.yaml
       - name: Gradle cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-
-      # 直接从上游克隆指定 tag 的源码（fork 本身不需要同步）
-      - name: clone upstream source
-        run: |
-          git clone --depth 1 --branch "${{ needs.check.outputs.tag }}" --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
-
-      - name: apply patch
-        run: |
-          cd upstream
-          git apply --whitespace=nowarn ../patch/image-compress.patch
-          git apply --whitespace=nowarn ../patch/user-experience.patch
-          echo "patch applied"
-
+          key: gradle-${{ runner.os }}-${{ hashFiles('upstream/**/*.gradle*', 'upstream/gradle/libs.versions.toml', 'upstream/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
       - name: prepare signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          cd upstream
-          echo "$KEYSTORE_BASE64" | base64 -d > app/app.key
-          cp ../google-services.json app/google-services.json
-          cat > local.properties <<EOF
-          storeFile=app.key
-          storePassword=$KEY_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          EOF
-          echo "signing prepared"
-
-      # JVM tests use the debug variant. Keep the release Firebase configuration unchanged.
-      - name: prepare debug test Google Services config
-        run: |
-          python3 - <<'PYDEBUG'
-          import json
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$KEY_PASSWORD" && test -n "$KEY_ALIAS"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > upstream/app/app.key
+          cp google-services.json upstream/app/google-services.json
+          python3 - <<'PY'
+          import json, os
           from pathlib import Path
-          app = Path("upstream/app")
-          config = json.loads((app / "google-services.json").read_text())
-          for client in config.get("client", []):
-              info = client["client_info"]["android_client_info"]
-              if not info["package_name"].endswith(".debug"):
-                  info["package_name"] += ".debug"
-          (app / "src/debug").mkdir(parents=True, exist_ok=True)
-          (app / "src/debug/google-services.json").write_text(json.dumps(config))
-          PYDEBUG
-
+          root = Path('upstream')
+          password, alias = os.environ['KEY_PASSWORD'], os.environ['KEY_ALIAS']
+          def prop(value):
+              return value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('=', '\\=').replace(':', '\\:').replace(' ', '\\ ')
+          (root / 'local.properties').write_text(f'storeFile=app.key\nstorePassword={prop(password)}\nkeyAlias={prop(alias)}\nkeyPassword={prop(password)}\n')
+          config = json.loads((root / 'app/google-services.json').read_text())
+          for client in config.get('client', []):
+              info = client['client_info']['android_client_info']
+              if not info['package_name'].endswith('.debug'):
+                  info['package_name'] += '.debug'
+          debug = root / 'app/src/debug'
+          debug.mkdir(parents=True, exist_ok=True)
+          (debug / 'google-services.json').write_text(json.dumps(config))
+          PY
       - name: install web-ui dependencies
         working-directory: upstream/web-ui
         run: pnpm install --frozen-lockfile
-
-      - name: gradle build
+      - name: patch regression tests
         working-directory: upstream
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --no-daemon
-          ./gradlew assembleRelease --no-daemon
-
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --no-daemon --stacktrace
+      - name: gradle build
+        working-directory: upstream
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
       - name: publish release
+        id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: auto-${{ needs.check.outputs.tag }}
-          allowUpdates: true
           name: RikkaHub ${{ needs.check.outputs.tag }} + 增强补丁
+          fail_on_unmatched_files: true
           body: |
-            基于上游 `${{ needs.check.outputs.tag }}` 自动构建，附加补丁：
-            1. 图片自动压缩至 500KB
-            2. 压缩对话支持「不限」目标大小
-            3. 压缩后原始消息保留可见，仅发送摘要+最近消息给 AI
-            4. 模式注入新增 `{{time}}` 变量
+            基于上游 `${{ needs.check.outputs.tag }}`，附加补丁：
+            - 可开关的图片压缩，默认关闭；大小可配置（100–5000 KB，默认 500 KB），GIF 保持原样。
+            - 压缩对话支持「不限」目标大小，原始消息保留可见，仅发送摘要和最近消息给 AI。
+            - 保留最近消息的分支；压缩期间修改消息会中止写回，避免旧快照覆盖。
+            - 模式注入支持 `{{time}}`；Markdown 后台流式导出，并保留思考内容开关。
 
-            ⚠️ 自编译签名版本，请先备份聊天数据，卸载官方版后安装（仅首次需要）。
+            首次从官方签名切换请先备份聊天数据；已有本仓库签名版本可覆盖升级。
           files: upstream/app/build/outputs/apk/release/app-arm64-v8a-release.apk
-
-      - name: notify ntfy
-        if: success() && env.NTFY_TOPIC != ''
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: |
-          curl -s -H "Title: RikkaHub 新版本已构建好" \
-            -H "Tags: package" \
-            -H "Actions: view, 下载 APK, https://github.com/${{ github.repository }}/releases/latest" \
-            -d "基于上游 ${{ needs.check.outputs.tag }} 构建完成，含 500KB 图片压缩、压缩保留原消息、{{time}} 变量。点「下载 APK」在手机浏览器下载安装。" \
-            "https://ntfy.sh/$NTFY_TOPIC"
-
       - name: update last_built
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+          BUILD_FINGERPRINT: ${{ needs.check.outputs.fingerprint }}
+          BUILD_REF: ${{ github.ref_name }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
         run: |
-          echo "${{ needs.check.outputs.tag }}" > last_built.txt
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          tag = os.environ['UPSTREAM_TAG']
+          Path('last_built.txt').write_text(tag + '\n')
+          Path('last_built.json').write_text(json.dumps({
+              'tag': tag, 'fingerprint': os.environ['BUILD_FINGERPRINT'],
+              'source_sha': subprocess.check_output(['git', '-C', 'upstream', 'rev-parse', 'HEAD'], text=True).strip(),
+              'release_url': os.environ['RELEASE_URL'],
+          }, indent=2) + '\n')
+          PY
           git config user.name "auto-build"
           git config user.email "auto-build@users.noreply.github.com"
-          git add last_built.txt
-          git commit -m "built ${{ needs.check.outputs.tag }}" || echo "no change"
-          git pull --rebase origin master || echo "rebase failed"
-          git push || echo "push failed"
+          git add last_built.txt last_built.json
+          if ! git diff --cached --quiet; then
+            git commit -m "built $UPSTREAM_TAG with verified patches"
+            git pull --rebase origin "$BUILD_REF"
+            git push origin "HEAD:$BUILD_REF"
+          fi
+      - name: notify ntfy
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then echo "NTFY_TOPIC is not configured"; exit 1; fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('/tmp/ntfy.json').write_text(json.dumps({
+              'topic': os.environ['NTFY_TOPIC'], 'title': 'RikkaHub 新版本已构建好', 'tags': ['package'],
+              'message': f"上游 {os.environ['UPSTREAM_TAG']} + 增强补丁已通过回归测试并构建完成。点「下载 APK」下载安装。图片压缩可在设置中开启。",
+              'actions': [{'action': 'view', 'label': '下载 APK', 'url': os.environ['RELEASE_URL']}],
+          }))
+          PY
+          curl --fail --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 -H 'Content-Type: application/json' --data-binary @/tmp/ntfy.json --output /tmp/ntfy-response.json https://ntfy.sh
+          echo "ntfy accepted the notification"
 
   fail_issue:
-    needs: build
-    if: failure()
+    needs: [check, build]
+    if: always() && (needs.check.result == 'failure' || needs.build.result == 'failure')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: open issue
+      - name: open or update failure issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue create \
-            --title "自动构建失败：${{ needs.check.outputs.tag }}" \
-            --body "上游 ${{ needs.check.outputs.tag }} 自动构建失败，补丁可能需要手动修复。构建日志：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --repo "${{ github.repository }}" || echo "issue create failed"
+          TITLE="自动构建失败：${UPSTREAM_TAG:-版本检查失败}"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number,title | jq -r --arg title "$TITLE" '[.[] | select(.title == $title)][0].number // empty')
+          BODY="构建或通知失败，请查看具体失败步骤。日志：$RUN_URL"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
