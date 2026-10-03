@@ -1,0 +1,63 @@
+name: Verify patched upstream
+
+on:
+  push:
+    branches: ['fix/**']
+    paths: ['patch/**', 'scripts/**', '.github/workflows/patch-validation.yml']
+  pull_request:
+    paths: ['patch/**', 'scripts/**', '.github/workflows/patch-validation.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: clone tested upstream base
+        run: git clone --depth 1 --branch 2.5.6 --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
+      - name: apply patches strictly
+        run: bash scripts/apply-patches.sh upstream
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: upstream/web-ui/pnpm-lock.yaml
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('upstream/**/*.gradle*', 'upstream/gradle/libs.versions.toml', 'upstream/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      - name: isolated debug config
+        run: |
+          mkdir -p upstream/app/src/debug
+          cat > upstream/app/src/debug/google-services.json <<'JSON'
+          {"project_info":{"project_number":"1","project_id":"rikkahub-dummy-build","storage_bucket":""},"client":[{"client_info":{"mobilesdk_app_id":"1:1:android:1","android_client_info":{"package_name":"me.rerere.rikkahub.debug"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummy"}]}],"configuration_version":"1"}
+          JSON
+      - name: install web-ui dependencies
+        working-directory: upstream/web-ui
+        run: pnpm install --frozen-lockfile
+      - name: tests and debug APK
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --no-daemon --stacktrace
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+      - name: test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-test-reports
+          path: upstream/app/build/reports/tests/
