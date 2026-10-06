@@ -11,3 +11,8 @@ local.properties
 .cursor
 .history
 .kotlin
+
+# Local development checkout and migration backups are not release inputs.
+/upstream/
+/backup/
+/rikkahub-master/

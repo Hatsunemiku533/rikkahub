@@ -1,5 +1,15 @@
 # Repository Guidelines
 
+## Patched Release Workflow
+
+Read the root README.md and patch/README.md before changing this fork. Release
+APKs are built from an upstream tag plus patch/*.patch, not the fork's root
+application source. Use the ignored upstream/ checkout for local development;
+update and verify the patches before publishing changes. CI configuration is in
+.github/workflows/auto-build.yml and scripts/. backup/ contains local archives
+and must not be committed. The old phone workspace is no longer a development
+or synchronization entry point for this project.
+
 ## Project Overview
 
 RikkaHub is a native Android LLM chat client that supports switching between different AI providers
