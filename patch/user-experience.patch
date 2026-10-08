@@ -493,7 +493,7 @@ index 35de38a..7e13f38 100644
              Row(
                  modifier = Modifier
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
-index 272f003..4e7a14e 100644
+index 272f003..a52ee97 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
 @@ -52,7 +52,6 @@ import androidx.compose.ui.platform.LocalContext
@@ -516,7 +516,15 @@ index 272f003..4e7a14e 100644
  import kotlinx.coroutines.launch
  import kotlinx.serialization.json.contentOrNull
  import kotlinx.serialization.json.jsonObject
-@@ -119,6 +123,7 @@ fun ChatExportSheet(
+@@ -74,7 +78,6 @@ import me.rerere.ai.core.MessageRole
+ import me.rerere.ai.ui.UIMessage
+ import me.rerere.ai.ui.UIMessagePart
+ import me.rerere.ai.ui.isEmptyUIMessage
+-import me.rerere.ai.util.encodeBase64
+ import me.rerere.common.android.appTempFolder
+ import me.rerere.rikkahub.R
+ import me.rerere.rikkahub.data.datastore.Settings
+@@ -119,6 +122,7 @@ fun ChatExportSheet(
      val density = LocalDensity.current
      val settings = LocalSettings.current
      var exportOptions by remember { mutableStateOf(ExportOptions()) }
@@ -524,7 +532,7 @@ index 272f003..4e7a14e 100644
  
      if (visible) {
          ModalBottomSheet(
-@@ -154,13 +159,26 @@ fun ChatExportSheet(
+@@ -154,13 +158,26 @@ fun ChatExportSheet(
                      stringResource(id = R.string.chat_page_export_success, "Markdown")
                  OutlinedCard(
                      onClick = {
@@ -557,7 +565,7 @@ index 272f003..4e7a14e 100644
                      modifier = Modifier.fillMaxWidth()
                  ) {
                      ListItem(
-@@ -171,7 +189,13 @@ fun ChatExportSheet(
+@@ -171,7 +188,13 @@ fun ChatExportSheet(
                              Text(stringResource(id = R.string.chat_page_export_markdown_desc))
                          },
                          leadingContent = {
@@ -572,7 +580,7 @@ index 272f003..4e7a14e 100644
                          }
                      )
                  }
-@@ -254,143 +278,36 @@ fun ChatExportSheet(
+@@ -254,143 +277,35 @@ fun ChatExportSheet(
      }
  }
  
@@ -695,7 +703,6 @@ index 272f003..4e7a14e 100644
 +                    title = conversation.title,
 +                    exportedOn = LocalDateTime.now().toLocalString(),
 +                    messages = messages,
-+                    encodeImage = { image -> image.encodeBase64().getOrNull()?.base64 ?: image.url },
 +                    checkActive = { jobContext.ensureActive() },
 +                    includeReasoning = options.includeReasoning,
 +                )
@@ -739,10 +746,10 @@ index 272f003..4e7a14e 100644
  
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExport.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExport.kt
 new file mode 100644
-index 0000000..46a5851
+index 0000000..08bf272
 --- /dev/null
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExport.kt
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,125 @@
 +package me.rerere.rikkahub.ui.pages.chat
 +
 +import me.rerere.ai.core.MessageRole
@@ -750,13 +757,12 @@ index 0000000..46a5851
 +import me.rerere.ai.ui.UIMessagePart
 +import me.rerere.rikkahub.utils.JsonInstantPretty
 +
-+/** Stream into a writer: never keep the entire transcript and all image data in memory. */
++/** Stream the transcript into a writer without reading or embedding image data. */
 +internal fun writeChatMarkdown(
 +    output: Appendable,
 +    title: String,
 +    exportedOn: String,
 +    messages: List<UIMessage>,
-+    encodeImage: (UIMessagePart.Image) -> String,
 +    checkActive: () -> Unit = {},
 +    includeReasoning: Boolean = true,
 +) {
@@ -777,7 +783,7 @@ index 0000000..46a5851
 +                    }
 +
 +                    is UIMessagePart.Image -> {
-+                        append("![Image](${encodeImage(part)})")
++                        append("[Image omitted]")
 +                        appendLine()
 +                    }
 +
@@ -834,7 +840,7 @@ index 0000000..46a5851
 +                                    }
 +
 +                                    is UIMessagePart.Image -> {
-+                                        append("![Tool Image](${encodeImage(outputPart)})")
++                                        append("[Tool image omitted]")
 +                                        appendLine()
 +                                    }
 +
@@ -1016,7 +1022,7 @@ index 0000000..e0130f3
 +}
 diff --git a/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt b/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt
 new file mode 100644
-index 0000000..eb00846
+index 0000000..7bec8e1
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt
 @@ -0,0 +1,141 @@
@@ -1043,7 +1049,6 @@ index 0000000..eb00846
 +                UIMessagePart.Reasoning("private reasoning"),
 +                UIMessagePart.Tool("call", "test", "{}", listOf(UIMessagePart.Reasoning("tool reasoning"), UIMessagePart.Text("visible output")))
 +            ))),
-+            encodeImage = { it.url },
 +            includeReasoning = false,
 +        )
 +        assertFalse(output.contains("private reasoning"))
@@ -1062,7 +1067,6 @@ index 0000000..eb00846
 +                    UIMessagePart.Text("Answer")
 +                ))
 +            ),
-+            encodeImage = { error("No image expected") }
 +        )
 +        val text = output.toString()
 +        assertTrue(text.startsWith("# Test chat\n\n*Exported on 2026-10-01*"))
@@ -1073,28 +1077,28 @@ index 0000000..eb00846
 +    }
 +
 +    @Test
-+    fun `image and tool image use the encoder and preserve tool output`() {
++    fun `image and tool image become placeholders and preserve tool output`() {
 +        val output = StringBuilder()
-+        val encodedUrls = mutableListOf<String>()
 +        writeChatMarkdown(
 +            output, "Images", "today",
 +            listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
-+                UIMessagePart.Image("file:///one.png"),
++                UIMessagePart.Text("Before image"),
++                UIMessagePart.Image("data:image/png;base64,SECRET_IMAGE"),
++                UIMessagePart.Text("After image"),
 +                UIMessagePart.Tool("call-1", "search_web", "{\"query\":\"test\"}", listOf(
 +                    UIMessagePart.Text("Tool result"),
 +                    UIMessagePart.Image("file:///two.png"),
 +                    UIMessagePart.Document("file:///doc.txt", "doc.txt")
 +                ))
 +            ))),
-+            encodeImage = {
-+                encodedUrls.add(it.url)
-+                "data:image/png;base64,TEST"
-+            }
 +        )
-+        assertEquals(listOf("file:///one.png", "file:///two.png"), encodedUrls)
 +        val text = output.toString()
-+        assertTrue(text.contains("![Image](data:image/png;base64,TEST)"))
-+        assertTrue(text.contains("![Tool Image](data:image/png;base64,TEST)"))
++        assertTrue(text.contains("Before image\n[Image omitted]\nAfter image\n"))
++        assertTrue(text.contains("[Tool image omitted]"))
++        assertFalse(text.contains("data:image"))
++        assertFalse(text.contains("SECRET_IMAGE"))
++        assertFalse(text.contains("file:///two.png"))
++        assertFalse(text.contains("!["))
 +        assertTrue(text.contains("**Tool**: `search_web`"))
 +        assertTrue(text.contains("- Call ID: `call-1`"))
 +        assertTrue(text.contains("Tool result"))
@@ -1103,7 +1107,7 @@ index 0000000..eb00846
 +    }
 +
 +    @Test
-+    fun `large transcript writes incrementally before the next image is encoded`() {
++    fun `large image transcript stays small and writes incrementally`() {
 +        var written = 0L
 +        val writer = object : Writer() {
 +            override fun write(buffer: CharArray, offset: Int, length: Int) { written += length }
@@ -1111,19 +1115,19 @@ index 0000000..eb00846
 +            override fun close() {}
 +        }
 +        val imagePayload = "data:image/png;base64," + "A".repeat(100_000)
-+        var encoded = 0
-+        var lastWritten = 0L
-+        val messages = List(64) { index ->
-+            UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image("file:///$index.png")))
++        var checks = 0
++        var previousMessageWritten = 0L
++        val messages = List(64) {
++            UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image(imagePayload)))
 +        }
-+        writeChatMarkdown(writer, "Large chat", "today", messages, encodeImage = {
-+            assertTrue("Previous content must already be written", written > lastWritten)
-+            lastWritten = written
-+            encoded++
-+            imagePayload
++        writeChatMarkdown(writer, "Large chat", "today", messages, checkActive = {
++            if (checks++ % 2 == 0) {
++                assertTrue("Previous content must already be written", written > previousMessageWritten)
++                previousMessageWritten = written
++            }
 +        })
-+        assertEquals(64, encoded)
-+        assertTrue(written > 6_400_000)
++        assertEquals(128, checks)
++        assertTrue(written in 1..10_000)
 +    }
 +
 +    @Test(expected = IOException::class)
@@ -1133,31 +1137,33 @@ index 0000000..eb00846
 +            override fun flush() {}
 +            override fun close() {}
 +        }
-+        writeChatMarkdown(writer, "Failure", "today", listOf(UIMessage.user("text")), encodeImage = { it.url })
-+    }
-+
-+    @Test(expected = IllegalStateException::class)
-+    fun `unexpected encoder failures propagate to the export caller`() {
-+        writeChatMarkdown(
-+            StringBuilder(), "Failure", "today",
-+            listOf(UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image("file:///one.png")))),
-+            encodeImage = { throw IllegalStateException("Encoder failed") }
-+        )
++        writeChatMarkdown(writer, "Failure", "today", listOf(UIMessage.user("text")))
 +    }
 +
 +    @Test
-+    fun `cancelled export stops before image encoding`() {
-+        var encoded = 0
++    fun `missing image file still exports a placeholder`() {
++        val output = StringBuilder()
++        writeChatMarkdown(
++            output, "Missing image", "today",
++            listOf(UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image("file:///missing.png")))),
++        )
++        assertTrue(output.contains("[Image omitted]"))
++        assertFalse(output.contains("file:///missing.png"))
++    }
++
++    @Test
++    fun `cancelled export stops before writing messages`() {
++        val output = StringBuilder()
 +        try {
 +            writeChatMarkdown(
-+                StringBuilder(), "Cancelled", "today",
++                output, "Cancelled", "today",
 +                listOf(UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image("file:///one.png")))),
-+                encodeImage = { encoded++; it.url },
 +                checkActive = { throw CancellationException("Cancelled") }
 +            )
 +            error("Cancellation should propagate")
 +        } catch (_: CancellationException) {
-+            assertEquals(0, encoded)
++            assertFalse(output.contains("**User**"))
++            assertFalse(output.contains("[Image omitted]"))
 +        }
 +    }
 +}

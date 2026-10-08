@@ -25,5 +25,8 @@ Image compression is optional (off by default), with a 100–5000 KiB JPEG byte 
 (500 KiB default), before Base64 encoding. GIFs remain unchanged. Further resizing
 enforces the byte limit after the quality-search budget is exhausted.
 
-Tests cover Markdown options/content/streaming/cancellation/errors, preserved recent
+Markdown export replaces message and tool-output images with text placeholders,
+without reading image files or embedding Base64/URLs. Image export is unchanged.
+
+Tests cover Markdown options/content/image placeholders/streaming/cancellation/errors, preserved recent
 branches, stale compression edits/deletions, and generation around archived nodes.

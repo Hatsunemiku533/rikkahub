@@ -47,7 +47,7 @@ fork Hatsunemiku533/rikkahub（public，Issues 已关闭）
 | 2 | 压缩对话目标大小可填 0 = 不限 | `ChatService.kt` compressConversation + `CompressContextDialog.kt` |
 | 3 | 压缩后原始消息保留可见（`compressed`/`isSummary` 字段 + UI 标签），只发摘要+最近消息；**roll/编辑重发路径同样过滤 compressed（2026-09-24 修复暴涨 bug）** | `ChatService.kt`、`MessageNodeEntity.kt`、`ConversationRepository.kt`、`ChatMessage.kt`、DB 迁移 |
 | 4 | 模式注入新增 `{{time}}` 变量 | `PlaceholderTransformer.kt` |
-| 5 | Markdown 后台流式导出，支持选择是否保留思考内容 | `ConversationExport.kt`、`MarkdownExport.kt` 及回归测试 |
+| 5 | Markdown 后台流式导出，支持选择是否保留思考内容；消息图片和工具返回图片仅保留占位符，不嵌入 Base64 或图片链接（长图导出不变） | `ConversationExport.kt`、`MarkdownExport.kt` 及回归测试 |
 
 现行 `2.5.6` patch 还修复了压缩保留区的分支/收藏丢失、旧快照覆盖，以及图片压缩质量搜索结束后未达到大小上限的问题。压缩期间消息发生变化会中止写回，详细边界见 `patch/README.md`；旧排查记录保留在本地 `backup/migration-20261006/`，不随公开仓库发布。
 
