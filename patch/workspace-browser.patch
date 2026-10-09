@@ -268,7 +268,7 @@ index 0b1be14..0a6b03f 100644
                      )
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt
 new file mode 100644
-index 0000000..bd8e903
+index 0000000..0ab08ad
 --- /dev/null
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt
 @@ -0,0 +1,344 @@
@@ -318,9 +318,9 @@ index 0000000..bd8e903
 +    val fullPath = workspaceDisplayPath(path)
 +    var showPath by remember { mutableStateOf(false) }
 +    Text(
-+        text = if (fullPath.length > 38) "…" + fullPath.takeLast(38) else fullPath,
++        text = fullPath,
 +        maxLines = 1,
-+        overflow = TextOverflow.Ellipsis,
++        overflow = TextOverflow.StartEllipsis,
 +        style = MaterialTheme.typography.titleSmall,
 +        modifier = Modifier.clickable { showPath = true },
 +    )
