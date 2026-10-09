@@ -1,0 +1,1201 @@
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/repository/WorkspaceRepository.kt b/app/src/main/java/me/rerere/rikkahub/data/repository/WorkspaceRepository.kt
+index f777c17..438c605 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/repository/WorkspaceRepository.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/repository/WorkspaceRepository.kt
+@@ -287,6 +287,17 @@ class WorkspaceRepository(
+         manager.moveFile(workspace.root, source, target, overwrite)
+     }
+ 
++    suspend fun transferFile(id: String, source: String, target: String, move: Boolean, overwrite: Boolean = false): WorkspaceFileEntry =
++        withContext(Dispatchers.IO) {
++            val workspace = dao.getById(id) ?: error("Workspace not found: $id")
++            manager.transferFile(workspace.root, source, target, move, overwrite)
++        }
++
++    suspend fun fileExists(id: String, path: String): Boolean = withContext(Dispatchers.IO) {
++        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
++        manager.fileExists(workspace.root, path)
++    }
++
+     suspend fun executeCommand(
+         id: String,
+         command: String,
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
+index 150d2d7..7fdd622 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
+@@ -105,6 +105,7 @@ fun WorkspaceDetailPage(id: String) {
+     val navController = LocalNavController.current
+     val vm: WorkspaceDetailVM = koinViewModel(parameters = { parametersOf(id) })
+     val state by vm.state.collectAsStateWithLifecycle()
++    val browserState by vm.fileBrowser.state.collectAsStateWithLifecycle()
+     val installProgress by vm.installProgress.collectAsStateWithLifecycle()
+     val installError by vm.installError.collectAsStateWithLifecycle()
+     val settingsError by vm.settingsError.collectAsStateWithLifecycle()
+@@ -114,9 +115,11 @@ fun WorkspaceDetailPage(id: String) {
+     var showInstallDialog by remember { mutableStateOf(false) }
+     var previewImageUri by remember { mutableStateOf<String?>(null) }
+     val context = LocalContext.current
++    var importLocation by remember { mutableStateOf<Pair<WorkspaceStorageArea, String>?>(null) }
+     val filePicker = rememberLauncherForActivityResult(
+         contract = ActivityResultContracts.OpenDocument(),
+     ) { uri ->
++        val location = importLocation.also { importLocation = null } ?: return@rememberLauncherForActivityResult
+         if (uri == null) return@rememberLauncherForActivityResult
+         val fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+             if (cursor.moveToFirst()) {
+@@ -125,16 +128,18 @@ fun WorkspaceDetailPage(id: String) {
+             } else null
+         } ?: uri.lastPathSegment ?: "imported_file"
+         val inputStream = context.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
+-        vm.importFile(inputStream, fileName)
++        if (location.first == WorkspaceStorageArea.FILES) vm.fileBrowser.importFile(inputStream, fileName, location.second)
++        else vm.importFile(inputStream, fileName, location.first, location.second)
+     }
+     var exportTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
++    var exportArea by remember { mutableStateOf(WorkspaceStorageArea.FILES) }
+     val exportLauncher = rememberLauncherForActivityResult(
+         contract = ActivityResultContracts.CreateDocument("*/*"),
+     ) { uri ->
+         val entry = exportTarget.also { exportTarget = null } ?: return@rememberLauncherForActivityResult
+         if (uri == null) return@rememberLauncherForActivityResult
+         val outputStream = context.contentResolver.openOutputStream(uri) ?: return@rememberLauncherForActivityResult
+-        vm.exportFile(entry, outputStream)
++        vm.exportFile(entry, outputStream, exportArea)
+     }
+     val directoryExportLauncher = rememberLauncherForActivityResult(
+         contract = ActivityResultContracts.OpenDocumentTree(),
+@@ -142,7 +147,7 @@ fun WorkspaceDetailPage(id: String) {
+         vm.exportFilesToDirectory(uri, context.contentResolver)
+     }
+ 
+-    BackHandler(enabled = pagerState.currentPage == 1 && state.path.isNotBlank()) {
++    BackHandler(enabled = pagerState.currentPage == 1 && state.area == WorkspaceStorageArea.LINUX && state.path.isNotBlank()) {
+         vm.goUp()
+     }
+ 
+@@ -150,7 +155,9 @@ fun WorkspaceDetailPage(id: String) {
+         topBar = {
+             TopAppBar(
+                 title = {
+-                    Text(
++                    if (pagerState.currentPage == 1 && state.area == WorkspaceStorageArea.FILES) {
++                        WorkspaceBrowserPathTitle(browserState.current.path)
++                    } else Text(
+                         text = state.workspace?.name ?: stringResource(R.string.workspace_detail_title),
+                         maxLines = 1,
+                         overflow = TextOverflow.Ellipsis,
+@@ -159,14 +166,23 @@ fun WorkspaceDetailPage(id: String) {
+                 navigationIcon = { BackButton() },
+                 actions = {
+                     if (pagerState.currentPage == 1) {
+-                        IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
++                        IconButton(
++                            enabled = !browserState.busy,
++                            onClick = {
++                                importLocation = state.area to if (state.area == WorkspaceStorageArea.FILES) browserState.current.path else state.path
++                                filePicker.launch(arrayOf("*/*"))
++                            },
++                        ) {
+                             Icon(
+                                 HugeIcons.FileImport,
+                                 contentDescription = stringResource(R.string.workspace_detail_import_file),
+                             )
+                         }
+                     }
+-                    IconButton(onClick = { vm.refresh() }) {
++                    IconButton(onClick = {
++                        if (pagerState.currentPage == 1 && state.area == WorkspaceStorageArea.FILES) vm.fileBrowser.refreshActive()
++                        else vm.refresh()
++                    }) {
+                         Icon(HugeIcons.Refresh01, contentDescription = null)
+                     }
+                     if (state.workspace?.shellStatus != WorkspaceShellStatus.DISABLED.name) {
+@@ -198,6 +214,7 @@ fun WorkspaceDetailPage(id: String) {
+     ) { innerPadding ->
+         HorizontalPager(
+             state = pagerState,
++            userScrollEnabled = false,
+             modifier = Modifier
+                 .padding(innerPadding)
+                 .fillMaxSize(),
+@@ -212,6 +229,8 @@ fun WorkspaceDetailPage(id: String) {
+                 )
+ 
+                 1 -> WorkspaceFilesPage(
++                    browser = vm.fileBrowser,
++                    browserState = browserState,
+                     state = state,
+                     isActive = pagerState.currentPage == 1,
+                     contentPadding = PaddingValues(),
+@@ -264,6 +283,7 @@ fun WorkspaceDetailPage(id: String) {
+                     },
+                     onExport = { entry ->
+                         exportTarget = entry
++                        exportArea = state.area
+                         exportLauncher.launch(entry.name)
+                     },
+                     onShare = { entry ->
+@@ -599,6 +619,8 @@ private fun InstallRootfsDialog(
+ 
+ @Composable
+ private fun WorkspaceFilesPage(
++    browser: WorkspaceFileBrowser,
++    browserState: WorkspaceBrowserState,
+     state: WorkspaceDetailState,
+     isActive: Boolean,
+     contentPadding: PaddingValues,
+@@ -611,6 +633,30 @@ private fun WorkspaceFilesPage(
+     onBatchExport: (List<WorkspaceFileEntry>) -> Unit,
+     onShare: (WorkspaceFileEntry) -> Unit,
+ ) {
++    if (state.area == WorkspaceStorageArea.FILES) {
++        Column(Modifier.fillMaxSize().padding(contentPadding)) {
++            Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
++                WorkspaceAreaSelector(selected = state.area, onSelected = onSelectArea)
++            }
++            if (state.exporting) {
++                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
++                Text("正在导出 ${state.exportCompleted}/${state.exportTotal}")
++            }
++            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp)) }
++            WorkspaceDualPaneBrowser(
++                browser = browser,
++                state = browserState,
++                isActive = isActive,
++                exporting = state.exporting,
++                onResolveImage = { entry -> onResolveImage(entry, WorkspaceStorageArea.FILES) },
++                onOpen = onOpen,
++                onExport = onExport,
++                onBatchExport = onBatchExport,
++                onShare = onShare,
++            )
++        }
++        return
++    }
+     var selecting by remember(state.area, state.path) { mutableStateOf(false) }
+     var selectedPaths by remember(state.area, state.path) { mutableStateOf(emptySet<String>()) }
+     val files = state.entries.filterNot { it.isDirectory }
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt
+index 0b1be14..0a6b03f 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt
+@@ -31,6 +31,7 @@ class WorkspaceDetailVM(
+     private val repository: WorkspaceRepository,
+     private val terminalSessionManager: WorkspaceTerminalSessionManager,
+ ) : ViewModel() {
++    internal val fileBrowser = WorkspaceFileBrowser(id, repository, viewModelScope)
+     private val _state = MutableStateFlow(WorkspaceDetailState())
+     val state = _state.asStateFlow()
+ 
+@@ -192,13 +193,18 @@ class WorkspaceDetailVM(
+         }
+     }
+ 
+-    fun importFile(inputStream: InputStream, fileName: String) {
++    fun importFile(
++        inputStream: InputStream,
++        fileName: String,
++        area: WorkspaceStorageArea = state.value.area,
++        destinationPath: String = state.value.path,
++    ) {
+         viewModelScope.launch {
+             runCatching {
+                 repository.importFile(
+                     id = id,
+-                    area = state.value.area,
+-                    destinationPath = state.value.path,
++                    area = area,
++                    destinationPath = destinationPath,
+                     fileName = fileName,
+                     inputStream = inputStream,
+                 )
+@@ -210,12 +216,12 @@ class WorkspaceDetailVM(
+         }
+     }
+ 
+-    fun exportFile(entry: WorkspaceFileEntry, outputStream: OutputStream) {
++    fun exportFile(entry: WorkspaceFileEntry, outputStream: OutputStream, area: WorkspaceStorageArea = state.value.area) {
+         viewModelScope.launch {
+             runCatching {
+                 repository.exportFile(
+                     id = id,
+-                    area = state.value.area,
++                    area = area,
+                     path = entry.path,
+                     outputStream = outputStream,
+                 )
+@@ -235,6 +241,7 @@ class WorkspaceDetailVM(
+      * 供分享 / 图片预览 / 交给系统应用打开等复用 (它们都需要一个 FileProvider 可访问的真实 File).
+      */
+     fun exportToCacheFile(entry: WorkspaceFileEntry, cacheDir: File, onReady: (File) -> Unit) {
++        val area = state.value.area
+         viewModelScope.launch {
+             runCatching {
+                 val dir = File(cacheDir, "workspace_share").apply { mkdirs() }
+@@ -242,7 +249,7 @@ class WorkspaceDetailVM(
+                 file.outputStream().use { output ->
+                     repository.exportFile(
+                         id = id,
+-                        area = state.value.area,
++                        area = area,
+                         path = entry.path,
+                         outputStream = output,
+                     )
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt
+new file mode 100644
+index 0000000..bd8e903
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDualPaneBrowser.kt
+@@ -0,0 +1,344 @@
++package me.rerere.rikkahub.ui.pages.extensions.workspace
++
++import android.content.ClipData
++import android.content.ClipboardManager
++import android.content.Context
++import androidx.activity.compose.BackHandler
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.combinedClickable
++import androidx.compose.foundation.gestures.awaitEachGesture
++import androidx.compose.foundation.gestures.awaitFirstDown
++import androidx.compose.foundation.gestures.detectHorizontalDragGestures
++import androidx.compose.foundation.layout.*
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.lazy.rememberLazyListState
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.*
++import androidx.compose.runtime.*
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.input.pointer.pointerInput
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.platform.LocalDensity
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.layout.ContentScale
++import coil3.compose.AsyncImage
++import coil3.request.ImageRequest
++import kotlinx.coroutines.CancellationException
++import java.io.File
++import me.rerere.hugeicons.HugeIcons
++import me.rerere.hugeicons.stroke.File02
++import me.rerere.hugeicons.stroke.Folder01
++import me.rerere.rikkahub.utils.fileSizeToString
++import me.rerere.workspace.WorkspaceFileEntry
++
++@Composable
++internal fun WorkspaceBrowserPathTitle(path: String) {
++    val context = LocalContext.current
++    val fullPath = workspaceDisplayPath(path)
++    var showPath by remember { mutableStateOf(false) }
++    Text(
++        text = if (fullPath.length > 38) "…" + fullPath.takeLast(38) else fullPath,
++        maxLines = 1,
++        overflow = TextOverflow.Ellipsis,
++        style = MaterialTheme.typography.titleSmall,
++        modifier = Modifier.clickable { showPath = true },
++    )
++    if (showPath) AlertDialog(
++        onDismissRequest = { showPath = false },
++        title = { Text("当前目录") },
++        text = { Text(fullPath) },
++        confirmButton = { TextButton(onClick = { copyWorkspacePath(context, fullPath); showPath = false }) { Text("复制路径") } },
++        dismissButton = { TextButton(onClick = { showPath = false }) { Text("关闭") } },
++    )
++}
++
++private fun copyWorkspacePath(context: Context, path: String) {
++    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
++        .setPrimaryClip(ClipData.newPlainText("文件路径", path))
++}
++
++@Composable
++internal fun WorkspaceDualPaneBrowser(
++    browser: WorkspaceFileBrowser,
++    state: WorkspaceBrowserState,
++    isActive: Boolean,
++    exporting: Boolean,
++    onResolveImage: suspend (WorkspaceFileEntry) -> File?,
++    onOpen: (WorkspaceFileEntry) -> Unit,
++    onExport: (WorkspaceFileEntry) -> Unit,
++    onBatchExport: (List<WorkspaceFileEntry>) -> Unit,
++    onShare: (WorkspaceFileEntry) -> Unit,
++) {
++    val context = LocalContext.current
++    var menuTarget by remember { mutableStateOf<Pair<Int, WorkspaceFileEntry>?>(null) }
++    var renameTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
++    var deleteTargets by remember { mutableStateOf<List<WorkspaceFileEntry>?>(null) }
++    val selected = state.current.entries.filter { it.path in state.current.selection.paths }
++
++    BackHandler(enabled = isActive && (state.current.selection.paths.isNotEmpty() || state.current.path.isNotBlank())) {
++        if (state.current.selection.paths.isNotEmpty()) browser.clearSelection() else browser.goUp()
++    }
++
++    Column(Modifier.fillMaxSize()) {
++        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
++        Row(Modifier.weight(1f).fillMaxWidth()) {
++            state.panes.forEachIndexed { index, pane ->
++                WorkspaceBrowserPaneView(
++                    pane = pane,
++                    index = index,
++                    active = state.active == index,
++                    enabled = !state.busy,
++                    modifier = Modifier.weight(1f).fillMaxHeight(),
++                    browser = browser,
++                    onOpen = onOpen,
++                    onResolveImage = onResolveImage,
++                    onMenu = { menuTarget = index to it },
++                )
++            }
++        }
++        if (selected.isNotEmpty()) {
++            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
++                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
++                    TextButton(onClick = { browser.clearSelection() }) { Text("取消 (${selected.size})") }
++                    TextButton(onClick = { browser.selectAll(state.active) }, enabled = !state.busy) { Text("全选") }
++                    TextButton(onClick = { onBatchExport(selected.filterNot { it.isDirectory }) }, enabled = !exporting && selected.any { !it.isDirectory }) { Text("导出") }
++                }
++                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
++                    TextButton(onClick = { browser.requestTransfer(state.active, selected, false) }, enabled = !state.busy) { Text("复制") }
++                    TextButton(onClick = { browser.requestTransfer(state.active, selected, true) }, enabled = !state.busy) { Text("移动") }
++                    TextButton(onClick = { deleteTargets = selected.toList() }, enabled = !state.busy) { Text("删除") }
++                }
++            }
++        }
++    }
++
++    menuTarget?.let { (index, entry) ->
++        val actions = buildList<Pair<String, () -> Unit>> {
++            add("复制" to { browser.requestTransfer(index, listOf(entry), false) })
++            add("移动" to { browser.requestTransfer(index, listOf(entry), true) })
++            add("删除" to { deleteTargets = listOf(entry) })
++            add("重命名" to { renameTarget = entry })
++            if (!entry.isDirectory) {
++                add("导出" to { onExport(entry) })
++                add("分享" to { onShare(entry) })
++            }
++            add("复制文件地址" to { copyWorkspacePath(context, workspaceDisplayPath(entry.path)) })
++            add("多选" to { browser.toggle(index, entry) })
++        }
++        AlertDialog(
++            onDismissRequest = { menuTarget = null },
++            title = { Text(entry.name) },
++            text = {
++                Column(Modifier.verticalScroll(rememberScrollState())) {
++                    actions.chunked(2).forEach { row ->
++                        Row(Modifier.fillMaxWidth()) {
++                            row.forEach { (label, action) ->
++                                TextButton(
++                                    modifier = Modifier.weight(1f),
++                                    enabled = !state.busy && (label != "导出" || !exporting),
++                                    onClick = { menuTarget = null; action() },
++                                ) { Text(label) }
++                            }
++                            if (row.size == 1) Spacer(Modifier.weight(1f))
++                        }
++                    }
++                }
++            },
++            confirmButton = { TextButton(onClick = { menuTarget = null }) { Text("关闭") } },
++        )
++    }
++
++    renameTarget?.let { entry ->
++        var name by remember(entry.path) { mutableStateOf(entry.name) }
++        val valid = runCatching { workspaceChildPath("", name) }.isSuccess
++        AlertDialog(
++            onDismissRequest = { renameTarget = null },
++            title = { Text("重命名") },
++            text = { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("完整文件名（含后缀）") }, isError = !valid, singleLine = true) },
++            confirmButton = { TextButton(enabled = valid && !state.busy, onClick = { browser.rename(entry, name); renameTarget = null }) { Text("确定") } },
++            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("取消") } },
++        )
++    }
++
++    deleteTargets?.let { entries ->
++        AlertDialog(
++            onDismissRequest = { deleteTargets = null },
++            title = { Text("删除 ${entries.size} 个项目？") },
++            text = { Text(entries.joinToString("\n") { workspaceDisplayPath(it.path) }, modifier = Modifier.verticalScroll(rememberScrollState())) },
++            confirmButton = { TextButton(enabled = !state.busy, onClick = { browser.delete(entries); deleteTargets = null }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
++            dismissButton = { TextButton(onClick = { deleteTargets = null }) { Text("取消") } },
++        )
++    }
++
++    state.confirmation?.let { request ->
++        AlertDialog(
++            onDismissRequest = browser::dismissTransfer,
++            title = { Text("${if (request.move) "移动" else "复制"} ${request.entries.size} 个项目") },
++            text = {
++                Text(
++                    "来源：\n${request.entries.joinToString("\n") { workspaceDisplayPath(it.path) }}\n\n目标目录：\n${workspaceDisplayPath(request.targetDirectory)}",
++                    modifier = Modifier.verticalScroll(rememberScrollState()),
++                )
++            },
++            confirmButton = { TextButton(onClick = browser::confirmTransfer, enabled = !state.busy) { Text("确定") } },
++            dismissButton = { TextButton(onClick = browser::dismissTransfer) { Text("取消") } },
++        )
++    }
++
++    state.conflict?.let { conflict ->
++        var alternateName by remember(conflict.target) { mutableStateOf(conflict.entry.name) }
++        val valid = alternateName != conflict.target.substringAfterLast('/') && runCatching { workspaceChildPath("", alternateName) }.isSuccess
++        AlertDialog(
++            onDismissRequest = { browser.answerConflict(WorkspaceConflictAnswer.Cancel) },
++            title = { Text("目标已存在") },
++            text = {
++                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Text(workspaceDisplayPath(conflict.target))
++                    Text("替换文件夹会替换整个文件夹。")
++                    OutlinedTextField(value = alternateName, onValueChange = { alternateName = it }, label = { Text("另存名称（含后缀）") }, singleLine = true)
++                }
++            },
++            confirmButton = {
++                Row {
++                    TextButton(onClick = { browser.answerConflict(WorkspaceConflictAnswer.Replace) }) { Text("替换") }
++                    TextButton(onClick = { browser.answerConflict(WorkspaceConflictAnswer.Rename(alternateName)) }, enabled = valid) { Text("另存") }
++                }
++            },
++            dismissButton = {
++                Row {
++                    TextButton(onClick = { browser.answerConflict(WorkspaceConflictAnswer.Skip) }) { Text("跳过") }
++                    TextButton(onClick = { browser.answerConflict(WorkspaceConflictAnswer.Cancel) }) { Text("停止") }
++                }
++            },
++        )
++    }
++
++    state.message?.let { message ->
++        AlertDialog(
++            onDismissRequest = browser::dismissMessage,
++            title = { Text("文件操作") },
++            text = { Text(message, modifier = Modifier.verticalScroll(rememberScrollState())) },
++            confirmButton = { TextButton(onClick = browser::dismissMessage) { Text("确定") } },
++        )
++    }
++}
++
++@Composable
++private fun WorkspaceBrowserPaneView(
++    pane: WorkspaceBrowserPane,
++    index: Int,
++    active: Boolean,
++    enabled: Boolean,
++    modifier: Modifier,
++    browser: WorkspaceFileBrowser,
++    onOpen: (WorkspaceFileEntry) -> Unit,
++    onResolveImage: suspend (WorkspaceFileEntry) -> File?,
++    onMenu: (WorkspaceFileEntry) -> Unit,
++) {
++    val border = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant
++    Column(
++        modifier.border(1.dp, border).pointerInput(index) {
++            // Observe the first down without consuming it, including taps on empty pane space.
++            awaitEachGesture { awaitFirstDown(requireUnconsumed = false); browser.activate(index) }
++        },
++    ) {
++        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
++            TextButton(onClick = { browser.goUp(index) }, enabled = enabled && pane.path.isNotBlank()) { Text("↑") }
++            Text(if (index == 0) "左侧" else "右侧", style = MaterialTheme.typography.labelSmall)
++        }
++        if (pane.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
++        key(pane.path) {
++            val scroll = rememberLazyListState()
++            LazyColumn(Modifier.fillMaxSize(), state = scroll, contentPadding = PaddingValues(bottom = 8.dp)) {
++                pane.error?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp)) } }
++                if (!pane.loading && pane.entries.isEmpty() && pane.error == null) item { Text("空文件夹", modifier = Modifier.padding(12.dp)) }
++                items(pane.entries, key = { it.path }) { entry ->
++                    WorkspaceBrowserRow(
++                        entry = entry,
++                        selected = entry.path in pane.selection.paths,
++                        anchor = entry.path == pane.selection.anchor,
++                        enabled = enabled,
++                        onResolveImage = { onResolveImage(entry) },
++                        onSwipe = { browser.swipe(index, entry) },
++                        onClick = {
++                            browser.activate(index)
++                            when {
++                                pane.selection.paths.isNotEmpty() -> browser.toggle(index, entry)
++                                entry.isDirectory -> browser.open(index, entry)
++                                else -> onOpen(entry)
++                            }
++                        },
++                        onLongClick = { browser.activate(index); onMenu(entry) },
++                    )
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun WorkspaceBrowserRow(
++    entry: WorkspaceFileEntry,
++    selected: Boolean,
++    anchor: Boolean,
++    enabled: Boolean,
++    onResolveImage: suspend () -> File?,
++    onSwipe: () -> Unit,
++    onClick: () -> Unit,
++    onLongClick: () -> Unit,
++) {
++    val context = LocalContext.current
++    val isImage = !entry.isDirectory && entry.detectFileType() == WorkspaceFileType.IMAGE
++    val imageFile by produceState<File?>(null, entry.path, entry.updatedAt, entry.sizeBytes) {
++        if (isImage) value = try { onResolveImage() }
++        catch (error: CancellationException) { throw error }
++        catch (_: Exception) { null }
++    }
++    val threshold = with(LocalDensity.current) { 40.dp.toPx() }
++    val swipe by rememberUpdatedState(onSwipe)
++    Row(
++        Modifier.fillMaxWidth()
++            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
++            .combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "文件操作")
++            .pointerInput(entry.path, enabled, threshold) {
++                if (enabled) {
++                    var distance = 0f
++                    detectHorizontalDragGestures(
++                        onDragStart = { distance = 0f },
++                        onHorizontalDrag = { change, amount -> change.consume(); distance += amount },
++                        onDragEnd = { if (distance < -threshold) swipe() },
++                        onDragCancel = { distance = 0f },
++                    )
++                }
++            }
++            .padding(horizontal = 8.dp, vertical = 9.dp),
++        verticalAlignment = Alignment.CenterVertically,
++        horizontalArrangement = Arrangement.spacedBy(6.dp),
++    ) {
++        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
++            Icon(if (entry.isDirectory) HugeIcons.Folder01 else HugeIcons.File02, contentDescription = null, modifier = Modifier.size(24.dp))
++            imageFile?.let { file ->
++                val request = remember(file, entry.updatedAt, entry.sizeBytes) {
++                    ImageRequest.Builder(context).data(file)
++                        .memoryCacheKey("workspace:${file.absolutePath}:${entry.updatedAt}:${entry.sizeBytes}").build()
++                }
++                AsyncImage(request, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
++            }
++        }
++        Column(Modifier.weight(1f)) {
++            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
++            Text(
++                if (anchor) "范围起点" else if (selected) "已选中" else if (entry.isDirectory) "文件夹" else entry.sizeBytes.fileSizeToString(),
++                style = MaterialTheme.typography.labelSmall,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++            )
++        }
++    }
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowser.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowser.kt
+new file mode 100644
+index 0000000..eac42eb
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowser.kt
+@@ -0,0 +1,242 @@
++package me.rerere.rikkahub.ui.pages.extensions.workspace
++
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.update
++import kotlinx.coroutines.launch
++import me.rerere.rikkahub.data.repository.WorkspaceRepository
++import me.rerere.workspace.WorkspaceFileEntry
++import me.rerere.workspace.WorkspaceStorageArea
++import java.io.InputStream
++
++internal data class WorkspaceBrowserPane(
++    val path: String = "",
++    val entries: List<WorkspaceFileEntry> = emptyList(),
++    val loading: Boolean = false,
++    val error: String? = null,
++    val selection: WorkspaceRangeSelection = WorkspaceRangeSelection(),
++)
++
++internal data class WorkspaceTransferRequest(
++    val entries: List<WorkspaceFileEntry>,
++    val targetDirectory: String,
++    val move: Boolean,
++    val targetName: String? = null,
++)
++
++internal data class WorkspaceBrowserConflict(val entry: WorkspaceFileEntry, val target: String)
++internal sealed interface WorkspaceConflictAnswer {
++    data object Replace : WorkspaceConflictAnswer
++    data object Skip : WorkspaceConflictAnswer
++    data object Cancel : WorkspaceConflictAnswer
++    data class Rename(val name: String) : WorkspaceConflictAnswer
++}
++
++internal data class WorkspaceBrowserState(
++    val panes: List<WorkspaceBrowserPane> = listOf(WorkspaceBrowserPane(), WorkspaceBrowserPane()),
++    val active: Int = 0,
++    val busy: Boolean = false,
++    val confirmation: WorkspaceTransferRequest? = null,
++    val conflict: WorkspaceBrowserConflict? = null,
++    val message: String? = null,
++) {
++    val current: WorkspaceBrowserPane get() = panes[active]
++}
++
++/** Independent browser state: Rootfs continues to use the original detail VM. */
++internal class WorkspaceFileBrowser(
++    private val files: WorkspaceBrowserStorage,
++    private val scope: CoroutineScope,
++) {
++    constructor(id: String, repository: WorkspaceRepository, scope: CoroutineScope) : this(
++        RepositoryBrowserStorage(id, repository), scope,
++    )
++    private val mutableState = MutableStateFlow(WorkspaceBrowserState())
++    val state = mutableState.asStateFlow()
++    private val loads = arrayOfNulls<Job>(2)
++    private val loadVersions = IntArray(2)
++    private var conflictAnswer: CompletableDeferred<WorkspaceConflictAnswer>? = null
++
++    init { refreshBoth() }
++
++    private fun updatePane(index: Int, block: (WorkspaceBrowserPane) -> WorkspaceBrowserPane) {
++        mutableState.update { it.copy(panes = it.panes.mapIndexed { paneIndex, pane -> if (paneIndex == index) block(pane) else pane }) }
++    }
++
++    fun activate(index: Int) { mutableState.update { it.copy(active = index) } }
++    fun refreshActive() = refresh(state.value.active)
++    fun refreshBoth() { refresh(0); refresh(1) }
++
++    private fun refresh(index: Int) {
++        loads[index]?.cancel()
++        val version = ++loadVersions[index]
++        val path = state.value.panes[index].path
++        updatePane(index) { it.copy(loading = true, error = null) }
++        loads[index] = scope.launch {
++            try {
++                val entries = files.list(path)
++                if (version == loadVersions[index]) updatePane(index) {
++                    it.copy(entries = entries, loading = false, selection = it.selection.retain(entries.map { file -> file.path }.toSet()))
++                }
++            } catch (error: CancellationException) { throw error }
++            catch (error: Exception) {
++                if (version == loadVersions[index]) updatePane(index) { it.copy(loading = false, error = error.message) }
++            }
++        }
++    }
++
++    fun open(index: Int, entry: WorkspaceFileEntry) {
++        activate(index)
++        if (!entry.isDirectory) return
++        updatePane(index) { WorkspaceBrowserPane(path = entry.path) }
++        refresh(index)
++    }
++
++    fun goUp(index: Int = state.value.active) {
++        activate(index)
++        val path = state.value.panes[index].path
++        if (path.isBlank()) return
++        updatePane(index) { WorkspaceBrowserPane(path = path.substringBeforeLast('/', "")) }
++        refresh(index)
++    }
++
++    fun swipe(index: Int, entry: WorkspaceFileEntry) {
++        activate(index)
++        updatePane(index) { it.copy(selection = it.selection.swipe(entry.path, it.entries.map { file -> file.path })) }
++    }
++
++    fun toggle(index: Int, entry: WorkspaceFileEntry) {
++        activate(index)
++        updatePane(index) { it.copy(selection = it.selection.toggle(entry.path)) }
++    }
++
++    fun clearSelection(index: Int = state.value.active) = updatePane(index) { it.copy(selection = WorkspaceRangeSelection()) }
++    fun selectAll(index: Int) = updatePane(index) {
++        it.copy(selection = WorkspaceRangeSelection(it.entries.map { file -> file.path }.toSet()))
++    }
++
++    fun dismissMessage() { mutableState.update { it.copy(message = null) } }
++    fun dismissTransfer() { mutableState.update { it.copy(confirmation = null) } }
++
++    fun requestTransfer(index: Int, entries: List<WorkspaceFileEntry>, move: Boolean) {
++        if (state.value.busy || entries.isEmpty()) return
++        activate(index)
++        mutableState.update { it.copy(confirmation = WorkspaceTransferRequest(entries.toList(), it.panes[1 - index].path, move)) }
++    }
++
++    fun answerConflict(answer: WorkspaceConflictAnswer) { conflictAnswer?.complete(answer) }
++
++    fun confirmTransfer() {
++        val request = state.value.confirmation ?: return
++        dismissTransfer()
++        executeTransfer(request)
++    }
++
++    private fun executeTransfer(request: WorkspaceTransferRequest) {
++        mutate {
++            var succeeded = 0
++            var skipped = 0
++            val failures = mutableListOf<String>()
++            for (entry in request.entries) {
++                try {
++                    var target = workspaceChildPath(request.targetDirectory, request.targetName ?: entry.name)
++                    var overwrite = false
++                    var skip = false
++                    while (files.exists(target)) {
++                        val deferred = CompletableDeferred<WorkspaceConflictAnswer>()
++                        conflictAnswer = deferred
++                        mutableState.update { it.copy(conflict = WorkspaceBrowserConflict(entry, target)) }
++                        val answer = try { deferred.await() } finally {
++                            conflictAnswer = null
++                            mutableState.update { it.copy(conflict = null) }
++                        }
++                        when (answer) {
++                            WorkspaceConflictAnswer.Replace -> { overwrite = true; break }
++                            WorkspaceConflictAnswer.Skip -> { skip = true; break }
++                            WorkspaceConflictAnswer.Cancel -> {
++                                mutableState.update { it.copy(message = "操作已停止；已完成 $succeeded 个，跳过 $skipped 个") }
++                                return@mutate
++                            }
++                            is WorkspaceConflictAnswer.Rename -> target = workspaceChildPath(request.targetDirectory, answer.name)
++                        }
++                    }
++                    if (skip) { skipped++; continue }
++                    files.transfer(entry.path, target, request.move, overwrite)
++                    succeeded++
++                } catch (error: CancellationException) { throw error }
++                catch (error: Exception) { failures += "${entry.name}：${error.message}" }
++            }
++            mutableState.update { it.copy(message = buildString {
++                append("${if (request.move) "移动" else "复制"}完成：$succeeded 个；跳过 $skipped 个")
++                if (failures.isNotEmpty()) append("\n" + failures.joinToString("\n"))
++            }) }
++        }
++    }
++
++    fun rename(entry: WorkspaceFileEntry, name: String) {
++        val directory = entry.path.substringBeforeLast('/', "")
++        val target = workspaceChildPath(directory, name)
++        if (target != entry.path) executeTransfer(WorkspaceTransferRequest(listOf(entry), directory, true, name))
++    }
++
++    fun delete(entries: List<WorkspaceFileEntry>) = mutate {
++        val failures = mutableListOf<String>()
++        for (entry in entries) {
++            try {
++                check(files.delete(entry)) { "删除失败或文件已不存在" }
++            } catch (error: CancellationException) { throw error }
++            catch (error: Exception) { failures += "${entry.name}：${error.message}" }
++        }
++        if (failures.isNotEmpty()) mutableState.update { it.copy(message = failures.joinToString("\n")) }
++    }
++
++    fun importFile(input: InputStream, name: String, directory: String) {
++        if (state.value.busy) {
++            input.close()
++            mutableState.update { it.copy(message = "文件操作正在进行，请完成后重新导入") }
++            return
++        }
++        mutate { input.use { files.importFile(directory, name, it) } }
++    }
++
++    private fun mutate(block: suspend () -> Unit) {
++        if (state.value.busy) return
++        mutableState.update { it.copy(busy = true) }
++        scope.launch {
++            try { block() }
++            catch (error: CancellationException) { throw error }
++            catch (error: Exception) { mutableState.update { it.copy(message = error.message ?: "文件操作失败") } }
++            finally {
++                mutableState.update { it.copy(busy = false, conflict = null) }
++                refreshBoth()
++            }
++        }
++    }
++}
++
++internal interface WorkspaceBrowserStorage {
++    suspend fun list(path: String): List<WorkspaceFileEntry>
++    suspend fun exists(path: String): Boolean
++    suspend fun transfer(source: String, target: String, move: Boolean, overwrite: Boolean)
++    suspend fun delete(entry: WorkspaceFileEntry): Boolean
++    suspend fun importFile(directory: String, name: String, input: InputStream)
++}
++
++private class RepositoryBrowserStorage(
++    private val id: String,
++    private val repository: WorkspaceRepository,
++) : WorkspaceBrowserStorage {
++    override suspend fun list(path: String) = repository.listFiles(id, WorkspaceStorageArea.FILES, path)
++    override suspend fun exists(path: String) = repository.fileExists(id, path)
++    override suspend fun transfer(source: String, target: String, move: Boolean, overwrite: Boolean) {
++        repository.transferFile(id, source, target, move, overwrite)
++    }
++    override suspend fun delete(entry: WorkspaceFileEntry) = repository.deleteFile(id, WorkspaceStorageArea.FILES, entry.path, entry.isDirectory)
++    override suspend fun importFile(directory: String, name: String, input: InputStream) {
++        repository.importFile(id, WorkspaceStorageArea.FILES, directory, name, input)
++    }
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelection.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelection.kt
+new file mode 100644
+index 0000000..0681269
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelection.kt
+@@ -0,0 +1,35 @@
++package me.rerere.rikkahub.ui.pages.extensions.workspace
++
++/** Stable path identities, with one pending endpoint per directory/pane. */
++internal data class WorkspaceRangeSelection(
++    val paths: Set<String> = emptySet(),
++    val anchor: String? = null,
++) {
++    fun swipe(path: String, orderedPaths: List<String>): WorkspaceRangeSelection {
++        val end = orderedPaths.indexOf(path)
++        if (end < 0) return this
++        val start = anchor?.let(orderedPaths::indexOf) ?: -1
++        return if (start < 0) copy(paths = paths + path, anchor = path)
++        else copy(paths = paths + orderedPaths.subList(minOf(start, end), maxOf(start, end) + 1), anchor = null)
++    }
++
++    fun toggle(path: String): WorkspaceRangeSelection = copy(
++        paths = if (path in paths) paths - path else paths + path,
++        anchor = anchor?.takeUnless { it == path },
++    )
++
++    fun retain(visiblePaths: Set<String>): WorkspaceRangeSelection = copy(
++        paths = paths.intersect(visiblePaths),
++        anchor = anchor?.takeIf { it in visiblePaths },
++    )
++}
++
++internal fun workspaceDisplayPath(path: String): String =
++    if (path.isBlank()) "/workspace" else "/workspace/$path"
++
++internal fun workspaceChildPath(directory: String, name: String): String {
++    require(name.isNotBlank() && name != "." && name != ".." && '/' !in name && '\\' !in name && '\u0000' !in name) {
++        "请输入有效文件名（不能包含 / 或 \\）"
++    }
++    return if (directory.isBlank()) name else "$directory/$name"
++}
+diff --git a/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowserTest.kt b/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowserTest.kt
+new file mode 100644
+index 0000000..cafa2cb
+--- /dev/null
++++ b/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceFileBrowserTest.kt
+@@ -0,0 +1,83 @@
++package me.rerere.rikkahub.ui.pages.extensions.workspace
++
++import kotlinx.coroutines.*
++import org.junit.Assert.*
++import org.junit.Test
++import me.rerere.workspace.WorkspaceFileEntry
++import java.io.InputStream
++
++class WorkspaceFileBrowserTest {
++    private fun entry(path: String, directory: Boolean = false) = WorkspaceFileEntry(path, path.substringAfterLast('/'), directory, 0, 0)
++    private class Storage : WorkspaceBrowserStorage {
++        var listing: suspend (String) -> List<WorkspaceFileEntry> = { emptyList() }
++        val existing = mutableSetOf<String>()
++        val transfers = mutableListOf<Pair<String, String>>()
++        override suspend fun list(path: String) = listing(path)
++        override suspend fun exists(path: String) = path in existing
++        override suspend fun transfer(source: String, target: String, move: Boolean, overwrite: Boolean) { transfers += source to target }
++        override suspend fun delete(entry: WorkspaceFileEntry) = true
++        override suspend fun importFile(directory: String, name: String, input: InputStream) {}
++    }
++
++    @Test fun panelNavigationAndSelectionAreIndependent() = runBlocking {
++        val store = Storage().apply { listing = { listOf(entry("A"), entry("B"), entry("C"), entry("D")) } }
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
++        try {
++            val browser = WorkspaceFileBrowser(store, scope)
++            browser.swipe(0, entry("A")); browser.swipe(0, entry("D"))
++            browser.open(1, entry("右目录", true))
++            assertEquals(setOf("A", "B", "C", "D"), browser.state.value.panes[0].selection.paths)
++            assertEquals("", browser.state.value.panes[0].path)
++            assertEquals("右目录", browser.state.value.current.path)
++        } finally { scope.cancel() }
++    }
++
++    @Test fun transferTargetIsFrozenWhileTheConfirmationIsOpen() = runBlocking {
++        val store = Storage()
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
++        try {
++            val browser = WorkspaceFileBrowser(store, scope)
++            browser.open(1, entry("目标", true))
++            browser.requestTransfer(0, listOf(entry("来源/a.md")), false)
++            browser.open(1, entry("别处", true))
++            browser.confirmTransfer()
++            assertEquals(listOf("来源/a.md" to "目标/a.md"), store.transfers)
++        } finally { scope.cancel() }
++    }
++
++    @Test fun conflictSupportsSkipRenameAndReplaceWithoutSilentOverwrite() = runBlocking {
++        val store = Storage().apply { existing += "a.md" }
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
++        try {
++            val browser = WorkspaceFileBrowser(store, scope)
++            browser.requestTransfer(0, listOf(entry("source/a.md")), false); browser.confirmTransfer()
++            assertNotNull(browser.state.value.conflict); assertTrue(store.transfers.isEmpty())
++            browser.answerConflict(WorkspaceConflictAnswer.Skip)
++            assertTrue(store.transfers.isEmpty()); assertFalse(browser.state.value.busy)
++            browser.requestTransfer(0, listOf(entry("source/a.md")), false); browser.confirmTransfer()
++            browser.answerConflict(WorkspaceConflictAnswer.Rename("b.txt"))
++            assertEquals("source/a.md" to "b.txt", store.transfers.single())
++            browser.requestTransfer(0, listOf(entry("source/a.md")), false); browser.confirmTransfer()
++            browser.answerConflict(WorkspaceConflictAnswer.Replace)
++            assertEquals("source/a.md" to "a.md", store.transfers.last())
++        } finally { scope.cancel() }
++    }
++
++    @Test fun lateDirectoryResponseCannotReplaceNewerNavigation() = runBlocking {
++        val oldResult = CompletableDeferred<List<WorkspaceFileEntry>>()
++        val store = Storage().apply {
++            listing = { path ->
++                if (path == "old") withContext(NonCancellable) { oldResult.await() }
++                else listOf(entry("$path/current"))
++            }
++        }
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
++        try {
++            val browser = WorkspaceFileBrowser(store, scope)
++            browser.open(0, entry("old", true)); browser.open(0, entry("new", true))
++            oldResult.complete(listOf(entry("old/stale")))
++            assertEquals("new", browser.state.value.current.path)
++            assertEquals("new/current", browser.state.value.current.entries.single().path)
++        } finally { scope.cancel() }
++    }
++}
+diff --git a/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelectionTest.kt b/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelectionTest.kt
+new file mode 100644
+index 0000000..f824eef
+--- /dev/null
++++ b/app/src/test/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceRangeSelectionTest.kt
+@@ -0,0 +1,33 @@
++package me.rerere.rikkahub.ui.pages.extensions.workspace
++
++import org.junit.Assert.*
++import org.junit.Test
++
++class WorkspaceRangeSelectionTest {
++    private val ordered = listOf("A", "B", "C", "D")
++    @Test fun forwardAndReverseSwipesSelectTheEntireRange() {
++        for ((first, last) in listOf("A" to "D", "D" to "A")) {
++            val selection = WorkspaceRangeSelection().swipe(first, ordered).swipe(last, ordered)
++            assertEquals(ordered.toSet(), selection.paths)
++            assertNull(selection.anchor)
++        }
++    }
++    @Test fun nextRangeAddsToExistingSelectionAndTapCanUndoOneItem() {
++        val selection = WorkspaceRangeSelection().swipe("A", ordered).swipe("B", ordered)
++            .swipe("D", ordered).swipe("D", ordered).toggle("B")
++        assertEquals(setOf("A", "D"), selection.paths)
++    }
++    @Test fun refreshDropsMissingAnchorAndPaths() {
++        val selection = WorkspaceRangeSelection().swipe("A", ordered).retain(setOf("B", "C", "D"))
++        assertTrue(selection.paths.isEmpty()); assertNull(selection.anchor)
++        assertEquals(setOf("D"), selection.swipe("D", ordered).paths)
++    }
++    @Test fun pathsAndFullFilenamesAreUnambiguous() {
++        assertEquals("/workspace", workspaceDisplayPath(""))
++        assertEquals("/workspace/ai对话存档", workspaceDisplayPath("ai对话存档"))
++        assertEquals("资料/notes.txt.bak", workspaceChildPath("资料", "notes.txt.bak"))
++        listOf("", " ", ".", "..", "../a", "a/b", "a\\b", "a\u0000b").forEach {
++            assertThrows(IllegalArgumentException::class.java) { workspaceChildPath("", it) }
++        }
++    }
++}
+diff --git a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
+index 8f0bbe2..e877677 100644
+--- a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
++++ b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
+@@ -6,7 +6,9 @@ import java.nio.charset.Charset
+ import java.nio.charset.StandardCharsets
+ import java.nio.file.FileSystems
+ import java.nio.file.Files
++import java.nio.file.LinkOption
+ import java.nio.file.Path
++import java.util.UUID
+ import kotlin.io.path.name
+ 
+ class WorkspaceFileSystem(
+@@ -102,6 +104,68 @@ class WorkspaceFileSystem(
+         return targetFile.toEntry(root)
+     }
+ 
++    /** File-browser transfers stage copies and keep replaced data until the commit succeeds. */
++    fun transfer(root: File, source: String, target: String, move: Boolean, overwrite: Boolean): WorkspaceFileEntry {
++        val base = root.canonicalFile
++        val src = resolvePath(root, source)
++        val dest = resolvePath(root, target)
++        require(src != base && dest != base) { "Cannot transfer workspace root" }
++        require(src.exists()) { "Source does not exist: $source" }
++        require(src != dest) { "Source and target are the same" }
++        require(!dest.toPath().startsWith(src.toPath())) { "Cannot transfer a directory into itself" }
++        require(!src.toPath().startsWith(dest.toPath())) { "Cannot replace a parent of the source" }
++        require(!dest.exists() || overwrite) { "Target already exists: $target" }
++        val parent = dest.parentFile
++        require(parent.isDirectory) { "Target directory does not exist" }
++        val stage = File(parent, ".rikkahub-transfer-${UUID.randomUUID()}")
++        val backup = File(parent, ".rikkahub-backup-${UUID.randomUUID()}")
++        var committed = false
++        var backedUp = false
++        try {
++            if (!move) {
++                // Files.walk does not follow directory links. Preserve links rather than dereferencing them.
++                Files.walk(src.toPath()).use { paths ->
++                    paths.forEach { item ->
++                        val output = stage.toPath().resolve(src.toPath().relativize(item))
++                        Files.copy(item, output, LinkOption.NOFOLLOW_LINKS)
++                    }
++                }
++            }
++            // Recheck immediately before committing; never silently replace a new destination.
++            if (dest.exists()) {
++                require(overwrite) { "Target already exists: $target" }
++                Files.move(dest.toPath(), backup.toPath())
++                backedUp = true
++            }
++            try {
++                Files.move((if (move) src else stage).toPath(), dest.toPath())
++                committed = true
++            } catch (error: Exception) {
++                if (backedUp) {
++                    try {
++                        Files.move(backup.toPath(), dest.toPath())
++                        backedUp = false
++                    } catch (restore: Exception) {
++                        error.addSuppressed(restore)
++                    }
++                }
++                throw error
++            }
++            return dest.toEntry(root)
++        } finally {
++            if (!move) deleteTransferTree(stage.toPath())
++            // On a failed restore leave the backup recoverable; never erase it in finally.
++            if (committed && backedUp) deleteTransferTree(backup.toPath())
++        }
++    }
++
++    private fun deleteTransferTree(path: Path) {
++        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return
++        Files.walk(path).use { paths ->
++            paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
++        }
++    }
++
+     fun glob(root: File, pattern: String, path: String = ""): List<WorkspaceFileEntry> {
+         require(pattern.isNotBlank()) { "Glob pattern is required" }
+         val start = resolvePath(root, path)
+diff --git a/workspace/src/main/java/me/rerere/workspace/WorkspaceManager.kt b/workspace/src/main/java/me/rerere/workspace/WorkspaceManager.kt
+index 0e7647b..6288b59 100644
+--- a/workspace/src/main/java/me/rerere/workspace/WorkspaceManager.kt
++++ b/workspace/src/main/java/me/rerere/workspace/WorkspaceManager.kt
+@@ -175,6 +175,12 @@ class WorkspaceManager(
+     fun moveFile(root: String, source: String, target: String, overwrite: Boolean = false): WorkspaceFileEntry =
+         fileSystem.move(filesDir(root), source, target, overwrite)
+ 
++    fun transferFile(root: String, source: String, target: String, move: Boolean, overwrite: Boolean): WorkspaceFileEntry =
++        fileSystem.transfer(filesDir(root), source, target, move, overwrite)
++
++    fun fileExists(root: String, path: String): Boolean =
++        fileSystem.resolve(filesDir(root), path).exists()
++
+     fun glob(root: String, pattern: String, path: String = ""): List<WorkspaceFileEntry> =
+         fileSystem.glob(filesDir(root), pattern, path)
+ 
+diff --git a/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt b/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt
+new file mode 100644
+index 0000000..ed8f19b
+--- /dev/null
++++ b/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt
+@@ -0,0 +1,84 @@
++package me.rerere.workspace
++
++import org.junit.Assert.*
++import org.junit.Rule
++import org.junit.Test
++import org.junit.rules.TemporaryFolder
++import java.io.File
++import java.nio.file.Files
++
++class WorkspaceTransferTest {
++    @get:Rule val temp = TemporaryFolder()
++    private val fs = WorkspaceFileSystem()
++
++    @Test fun copiesDirectoryWithUnicodeNamesAndBinaryBytes() {
++        val root = temp.newFolder()
++        File(root, "来源/子目录").mkdirs()
++        File(root, "目标").mkdir()
++        val bytes = byteArrayOf(0, 1, -1, 42)
++        File(root, "来源/子目录/图.bin").writeBytes(bytes)
++        fs.transfer(root, "来源", "目标/来源", move = false, overwrite = false)
++        assertArrayEquals(bytes, File(root, "目标/来源/子目录/图.bin").readBytes())
++        assertArrayEquals(bytes, File(root, "来源/子目录/图.bin").readBytes())
++        assertFalse(root.walk().any { it.name.startsWith(".rikkahub-") })
++    }
++
++    @Test fun moveAndRenameIncludeTheExtension() {
++        val root = temp.newFolder()
++        File(root, "a.txt").writeText("hello")
++        fs.transfer(root, "a.txt", "资料.md", move = true, overwrite = false)
++        assertFalse(File(root, "a.txt").exists())
++        assertEquals("hello", File(root, "资料.md").readText())
++    }
++
++    @Test fun collisionDoesNotTouchEitherFile() {
++        val root = temp.newFolder()
++        File(root, "a").writeText("source")
++        File(root, "b").writeText("destination")
++        assertThrows(IllegalArgumentException::class.java) { fs.transfer(root, "a", "b", true, false) }
++        assertEquals("source", File(root, "a").readText())
++        assertEquals("destination", File(root, "b").readText())
++    }
++
++    @Test fun explicitReplacementReplacesDirectoryRatherThanMerging() {
++        val root = temp.newFolder()
++        File(root, "a").mkdir(); File(root, "b").mkdir()
++        File(root, "a/new").writeText("new")
++        File(root, "b/old").writeText("old")
++        fs.transfer(root, "a", "b", false, true)
++        assertEquals("new", File(root, "b/new").readText())
++        assertFalse(File(root, "b/old").exists())
++        assertTrue(File(root, "a/new").exists())
++    }
++
++    @Test fun rejectsSamePathRootTraversalAndAncestorTargets() {
++        val root = temp.newFolder()
++        File(root, "a/child").mkdirs()
++        listOf("a" to "a", "a" to "a/child/copy", "a/child" to "a", "a" to "", "" to "other", "a" to "../escape").forEach { (source, target) ->
++            assertThrows(IllegalArgumentException::class.java) { fs.transfer(root, source, target, false, true) }
++        }
++        assertTrue(File(root, "a/child").isDirectory)
++    }
++
++    @Test fun missingTargetParentLeavesSourceIntact() {
++        val root = temp.newFolder()
++        File(root, "a").writeText("source")
++        assertThrows(IllegalArgumentException::class.java) { fs.transfer(root, "a", "missing/a", true, false) }
++        assertEquals("source", File(root, "a").readText())
++    }
++
++    @Test fun nestedLinksArePreservedAndReplacementCleanupDoesNotFollowThem() {
++        val root = temp.newFolder()
++        val outside = temp.newFolder()
++        File(outside, "keep").writeText("untouched")
++        File(root, "a").mkdir(); File(root, "b").mkdir()
++        Files.createSymbolicLink(File(root, "a/link").toPath(), outside.toPath())
++        Files.createSymbolicLink(File(root, "b/old-link").toPath(), outside.toPath())
++        fs.transfer(root, "a", "b", false, true)
++        assertTrue(Files.isSymbolicLink(File(root, "b/link").toPath()))
++        assertEquals(outside.toPath(), Files.readSymbolicLink(File(root, "b/link").toPath()))
++        assertEquals("untouched", File(outside, "keep").readText())
++        // Remove links before TemporaryFolder recursively tears down the fixture.
++        Files.delete(File(root, "a/link").toPath()); Files.delete(File(root, "b/link").toPath())
++    }
++}
