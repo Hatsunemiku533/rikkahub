@@ -146,7 +146,8 @@ jobs:
         working-directory: upstream
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --no-daemon --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :workspace:testDebugUnitTest --tests "me.rerere.workspace.WorkspaceTransferTest" --no-daemon --stacktrace
       - name: gradle build
         working-directory: upstream
         run: ./gradlew assembleRelease --no-daemon --stacktrace
@@ -163,6 +164,7 @@ jobs:
             - 压缩对话支持「不限」目标大小，原始消息保留可见，仅发送摘要和最近消息给 AI。
             - 保留最近消息的分支；压缩期间修改消息会中止写回，避免旧快照覆盖。
             - 模式注入支持 `{{time}}`；Markdown 后台流式导出，并保留思考内容开关。
+            - 工作区文件区双面板、当前目录路径、长按操作菜单和左滑范围多选；复制/移动到另一侧，保留 Rootfs 原浏览方式。
 
             首次从官方签名切换请先备份聊天数据；已有本仓库签名版本可覆盖升级。
           files: upstream/app/build/outputs/apk/release/app-arm64-v8a-release.apk

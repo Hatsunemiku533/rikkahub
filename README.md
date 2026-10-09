@@ -11,7 +11,7 @@
 | 路径 | 内容 |
 |---|---|
 | `.git/` | 原 fork 的 Git 历史；`origin` 为 `Hatsunemiku533/rikkahub`，工作分支为 `master` |
-| `upstream/` | 真正的上游 Git 克隆，基于 `2.5.6` / `447bb7e89710d31f1204d7a2973baa19fdbd5b28`，已按 CI 顺序应用两份当前 patch；实际改码目录，不入外层仓库 |
+| `upstream/` | 真正的上游 Git 克隆，基于 `2.5.6` / `447bb7e89710d31f1204d7a2973baa19fdbd5b28`，已按 CI 顺序应用三份当前 patch；实际改码目录，不入外层仓库 |
 | `patch/` | 从 fork 更新的现行 `2.5.6` 补丁及说明；修改这些文件并推送 `master` 会触发构建 |
 | `.github/workflows/` | 自动构建、验证构建和补丁验证工作流 |
 | `scripts/` | 顺序打 patch 与构建指纹检查脚本 |
