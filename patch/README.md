@@ -53,7 +53,7 @@ directory. Existing destinations require replace, skip or a different full
 filename; folder replacement replaces the whole folder (no implicit merge).
 Copies are staged and replacements backed up before commit. Self, descendant,
 ancestor, root and escaping targets are rejected. Nested links are copied as
-links and cleanup never follows them. A failed restore leaves the backup in
+links; recursive deletion and cleanup never follow them. A failed restore leaves the backup in
 place. File operations do not run concurrently in the browser.
 
 Regression tests cover forward/reverse ranges, panel isolation, stale directory

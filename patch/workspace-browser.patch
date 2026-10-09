@@ -21,7 +21,7 @@ index f777c17..438c605 100644
          id: String,
          command: String,
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
-index 150d2d7..7fdd622 100644
+index 150d2d7..f57d113 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
 @@ -105,6 +105,7 @@ fun WorkspaceDetailPage(id: String) {
@@ -111,7 +111,15 @@ index 150d2d7..7fdd622 100644
                          Icon(HugeIcons.Refresh01, contentDescription = null)
                      }
                      if (state.workspace?.shellStatus != WorkspaceShellStatus.DISABLED.name) {
-@@ -198,6 +214,7 @@ fun WorkspaceDetailPage(id: String) {
+@@ -182,6 +198,7 @@ fun WorkspaceDetailPage(id: String) {
+             NavigationBar {
+                 NavigationBarItem(
+                     selected = pagerState.currentPage == 0,
++                    enabled = !browserState.busy,
+                     label = { Text(stringResource(R.string.workspace_detail_tab_basic)) },
+                     icon = { Icon(HugeIcons.Settings03, contentDescription = null) },
+                     onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
+@@ -198,6 +215,7 @@ fun WorkspaceDetailPage(id: String) {
      ) { innerPadding ->
          HorizontalPager(
              state = pagerState,
@@ -119,7 +127,7 @@ index 150d2d7..7fdd622 100644
              modifier = Modifier
                  .padding(innerPadding)
                  .fillMaxSize(),
-@@ -212,6 +229,8 @@ fun WorkspaceDetailPage(id: String) {
+@@ -212,6 +230,8 @@ fun WorkspaceDetailPage(id: String) {
                  )
  
                  1 -> WorkspaceFilesPage(
@@ -128,7 +136,7 @@ index 150d2d7..7fdd622 100644
                      state = state,
                      isActive = pagerState.currentPage == 1,
                      contentPadding = PaddingValues(),
-@@ -264,6 +283,7 @@ fun WorkspaceDetailPage(id: String) {
+@@ -264,6 +284,7 @@ fun WorkspaceDetailPage(id: String) {
                      },
                      onExport = { entry ->
                          exportTarget = entry
@@ -136,7 +144,7 @@ index 150d2d7..7fdd622 100644
                          exportLauncher.launch(entry.name)
                      },
                      onShare = { entry ->
-@@ -599,6 +619,8 @@ private fun InstallRootfsDialog(
+@@ -599,6 +620,8 @@ private fun InstallRootfsDialog(
  
  @Composable
  private fun WorkspaceFilesPage(
@@ -145,14 +153,14 @@ index 150d2d7..7fdd622 100644
      state: WorkspaceDetailState,
      isActive: Boolean,
      contentPadding: PaddingValues,
-@@ -611,6 +633,30 @@ private fun WorkspaceFilesPage(
+@@ -611,6 +634,30 @@ private fun WorkspaceFilesPage(
      onBatchExport: (List<WorkspaceFileEntry>) -> Unit,
      onShare: (WorkspaceFileEntry) -> Unit,
  ) {
 +    if (state.area == WorkspaceStorageArea.FILES) {
 +        Column(Modifier.fillMaxSize().padding(contentPadding)) {
 +            Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-+                WorkspaceAreaSelector(selected = state.area, onSelected = onSelectArea)
++                WorkspaceAreaSelector(selected = state.area, onSelected = onSelectArea, enabled = !browserState.busy)
 +            }
 +            if (state.exporting) {
 +                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -176,6 +184,22 @@ index 150d2d7..7fdd622 100644
      var selecting by remember(state.area, state.path) { mutableStateOf(false) }
      var selectedPaths by remember(state.area, state.path) { mutableStateOf(emptySet<String>()) }
      val files = state.entries.filterNot { it.isDirectory }
+@@ -709,6 +756,7 @@ private fun WorkspaceFilesPage(
+ private fun WorkspaceAreaSelector(
+     selected: WorkspaceStorageArea,
+     onSelected: (WorkspaceStorageArea) -> Unit,
++    enabled: Boolean = true,
+ ) {
+     val areas = listOf(
+         WorkspaceStorageArea.FILES to stringResource(R.string.workspace_detail_area_files),
+@@ -718,6 +766,7 @@ private fun WorkspaceAreaSelector(
+         areas.forEachIndexed { index, (area, label) ->
+             SegmentedButton(
+                 selected = selected == area,
++                enabled = enabled,
+                 onClick = { onSelected(area) },
+                 shape = SegmentedButtonDefaults.itemShape(index, areas.size),
+             ) {
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt
 index 0b1be14..0a6b03f 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailVM.kt
@@ -1010,7 +1034,7 @@ index 0000000..f824eef
 +    }
 +}
 diff --git a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
-index 8f0bbe2..e877677 100644
+index 8f0bbe2..84d3312 100644
 --- a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
 +++ b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
 @@ -6,7 +6,9 @@ import java.nio.charset.Charset
@@ -1023,7 +1047,21 @@ index 8f0bbe2..e877677 100644
  import kotlin.io.path.name
  
  class WorkspaceFileSystem(
-@@ -102,6 +104,68 @@ class WorkspaceFileSystem(
+@@ -73,10 +75,12 @@ class WorkspaceFileSystem(
+     fun delete(root: File, path: String, recursive: Boolean = false): Boolean {
+         require(path.isNotBlank() && path != ".") { "Refusing to delete workspace root" }
+         val file = resolvePath(root, path)
++        require(file != root.canonicalFile) { "Refusing to delete workspace root" }
+         if (!file.exists()) return false
+         return if (file.isDirectory) {
+             require(recursive) { "Directory delete requires recursive = true" }
+-            file.deleteRecursively()
++            deleteTransferTree(file.toPath())
++            true
+         } else {
+             file.delete()
+         }
+@@ -102,6 +106,68 @@ class WorkspaceFileSystem(
          return targetFile.toEntry(root)
      }
  
@@ -1111,10 +1149,10 @@ index 0e7647b..6288b59 100644
  
 diff --git a/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt b/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt
 new file mode 100644
-index 0000000..ed8f19b
+index 0000000..2d96e53
 --- /dev/null
 +++ b/workspace/src/test/java/me/rerere/workspace/WorkspaceTransferTest.kt
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,96 @@
 +package me.rerere.workspace
 +
 +import org.junit.Assert.*
@@ -1197,5 +1235,17 @@ index 0000000..ed8f19b
 +        assertEquals("untouched", File(outside, "keep").readText())
 +        // Remove links before TemporaryFolder recursively tears down the fixture.
 +        Files.delete(File(root, "a/link").toPath()); Files.delete(File(root, "b/link").toPath())
++    }
++
++    @Test fun deletingDirectoryDoesNotFollowNestedLinksOrDeleteRoot() {
++        val root = temp.newFolder()
++        val outside = temp.newFolder()
++        File(outside, "keep").writeText("untouched")
++        File(root, "folder").mkdir()
++        Files.createSymbolicLink(File(root, "folder/link").toPath(), outside.toPath())
++        assertTrue(fs.delete(root, "folder", recursive = true))
++        assertEquals("untouched", File(outside, "keep").readText())
++        assertThrows(IllegalArgumentException::class.java) { fs.delete(root, "/", recursive = true) }
++        assertTrue(root.isDirectory)
 +    }
 +}
