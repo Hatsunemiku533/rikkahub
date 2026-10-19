@@ -141,153 +141,109 @@ index 91b80db..ae7725d 100644
  private fun File.normalizeByExif(bitmap: Bitmap): Bitmap {
      val orientation = runCatching {
          ExifInterface(absolutePath).getAttributeInt(
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/ImageCompressSettings.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/ImageCompressSettings.kt
+new file mode 100644
+index 0000000..89144d8
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/ImageCompressSettings.kt
+@@ -0,0 +1,10 @@
++package me.rerere.rikkahub.data.datastore
++
++import me.rerere.ai.util.ImageCompressConfig
++
++fun Settings.toImageCompressConfig(): ImageCompressConfig =
++    if (imageCompressEnabled) ImageCompressConfig(
++        maxDimension = 1600,
++        maxPixels = 4_000_000L,
++        maxBytes = imageCompressMaxBytes.coerceIn(100, 5000) * 1024L,
++    ) else ImageCompressConfig()
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
-index e9a02c6..341f684 100644
+index 22419c1..ab8a5f4 100644
 --- a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
-@@ -28,6 +28,8 @@ import me.rerere.ai.core.MessageRole
- import me.rerere.ai.core.ReasoningLevel
- import me.rerere.ai.provider.Model
- import me.rerere.ai.provider.ProviderSetting
-+import me.rerere.ai.util.ImageCompressConfig
+@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.sync.Mutex
+ import kotlinx.coroutines.sync.withLock
+ import kotlinx.coroutines.withContext
 +import me.rerere.ai.util.currentImageCompressConfig
+ import me.rerere.ai.core.ReasoningLevel
  import me.rerere.rikkahub.AppScope
- import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
- import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
-@@ -178,6 +180,10 @@ class SettingsStore(
+ import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV1Migration
+@@ -173,6 +174,10 @@ class SettingsStore internal constructor(
          // 备份提醒
          val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
  
-+        // 图片发送压缩
++        // Keep the existing preference keys so upgrades retain the image settings.
 +        val IMAGE_COMPRESS_ENABLED = booleanPreferencesKey("image_compress_enabled")
 +        val IMAGE_COMPRESS_MAX_BYTES = intPreferencesKey("image_compress_max_bytes")
 +
          // 统计
          val LAUNCH_COUNT = intPreferencesKey("launch_count")
  
-@@ -248,6 +254,8 @@ class SettingsStore(
-                 preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
-                 preferences[LAUNCH_COUNT] = settings.launchCount
-                 preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
-+                preferences[IMAGE_COMPRESS_ENABLED] = settings.imageCompressEnabled
-+                preferences[IMAGE_COMPRESS_MAX_BYTES] = settings.imageCompressMaxBytes.coerceIn(100, 5000)
+@@ -221,7 +226,9 @@ class SettingsStore internal constructor(
+         // 整份设置的 JSON 解码很重，不能放在主线程
+         scope.launch(Dispatchers.Default) {
+             state.value = try {
+-                preferencesFlow.first().toSettings().normalized()
++                preferencesFlow.first().toSettings().normalized().also {
++                    currentImageCompressConfig = it.toImageCompressConfig()
++                }
+             } catch (e: CancellationException) {
+                 throw e
+             } catch (e: Throwable) {
+@@ -257,6 +264,7 @@ class SettingsStore internal constructor(
              }
+             // 规整会重建提供商、助手等对象，而界面按引用判断它们有没有变：规整没改动任何东西时保留传入的实例
+             val normalized = updated.normalized()
++            currentImageCompressConfig = normalized.toImageCompressConfig()
+             state.value = if (normalized == updated) updated else normalized
          }
-     }
-@@ -348,6 +356,8 @@ class SettingsStore(
-                 } ?: BackupReminderConfig(),
-                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
-                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
-+                imageCompressEnabled = preferences[IMAGE_COMPRESS_ENABLED] == true,
-+                imageCompressMaxBytes = preferences[IMAGE_COMPRESS_MAX_BYTES]?.coerceIn(100, 5000) ?: 500,
-             )
-         }
-         .map {
-@@ -444,6 +454,9 @@ class SettingsStore(
-         .onEach {
-             get<PebbleEngine>().templateCache.invalidateAll()
-         }
-+        .onEach {
-+            currentImageCompressConfig = it.toImageCompressConfig()
-+        }
- 
-     val settingsFlow = settingsFlowRaw
-         .distinctUntilChanged()
-@@ -455,6 +468,7 @@ class SettingsStore(
-             return
-         }
-         settingsFlow.value = settings
-+        currentImageCompressConfig = settings.toImageCompressConfig()
-         persistSettings(dataStore, settings)
-     }
- 
-@@ -609,6 +623,8 @@ data class Settings(
+         persist()
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/Settings.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/Settings.kt
+index d7c46c2..5218cd4 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/datastore/Settings.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/Settings.kt
+@@ -80,6 +80,9 @@ data class Settings(
+     val webServerLocalhostOnly: Boolean = false,
      val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
-     val launchCount: Int = 0,
      val sponsorAlertDismissedAt: Int = 0,
 +    val imageCompressEnabled: Boolean = false,
++    // Historical name; the stored value is KiB, not bytes.
 +    val imageCompressMaxBytes: Int = 500,
  ) {
      companion object {
          // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储
-@@ -616,6 +632,18 @@ data class Settings(
-     }
- }
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsFields.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsFields.kt
+index e9b779c..bdaf2c2 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsFields.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsFields.kt
+@@ -145,6 +145,9 @@ internal val SETTINGS_FIELDS: List<SettingsField<*, *>> = with(SettingsStore) {
+         // 备份提醒
+         json(BACKUP_REMINDER_CONFIG, Settings::backupReminderConfig) { copy(backupReminderConfig = it) },
  
-+// 将设置转换为 ai 模块的图片压缩配置；未开启时保持默认行为（不限制文件大小）
-+fun Settings.toImageCompressConfig(): ImageCompressConfig =
-+    if (imageCompressEnabled) {
-+        ImageCompressConfig(
-+            maxDimension = 1600,
-+            maxPixels = 4_000_000L,
-+            maxBytes = imageCompressMaxBytes.coerceIn(100, 5000) * 1024L,
-+        )
-+    } else {
-+        ImageCompressConfig()
-+    }
++        plain(IMAGE_COMPRESS_ENABLED, Settings::imageCompressEnabled) { copy(imageCompressEnabled = it) },
++        plain(IMAGE_COMPRESS_MAX_BYTES, Settings::imageCompressMaxBytes) { copy(imageCompressMaxBytes = it) },
 +
- @Serializable
- data class NetworkSetting(
-     val userAgent: String = "",
-diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
-index 46829be..a030755 100644
---- a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
-@@ -31,6 +31,7 @@ import me.rerere.rikkahub.data.datastore.BackgroundEffectType
- import me.rerere.rikkahub.data.datastore.DisplaySetting
- import me.rerere.rikkahub.ui.components.nav.BackButton
- import me.rerere.rikkahub.ui.components.ui.CardGroup
-+import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
- import me.rerere.rikkahub.ui.components.ui.Select
- import me.rerere.rikkahub.ui.hooks.rememberSharedPreferenceBoolean
- import me.rerere.rikkahub.ui.theme.CustomColors
-@@ -285,6 +286,41 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
-                 }
-             }
+         // 赞助提醒
+         plain(SPONSOR_ALERT_DISMISSED_AT, Settings::sponsorAlertDismissedAt) { copy(sponsorAlertDismissedAt = it) },
+     )
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsNormalization.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsNormalization.kt
+index 8c3fd65..d4b9bac 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsNormalization.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/SettingsNormalization.kt
+@@ -102,6 +102,7 @@ internal fun Settings.withoutInvalidReferences(): Settings {
  
-+            item {
-+                CardGroup(
-+                    modifier = Modifier.padding(horizontal = 8.dp),
-+                    title = { Text(stringResource(R.string.setting_page_image_compress_settings)) },
-+                ) {
-+                    item(
-+                        headlineContent = { Text(stringResource(R.string.setting_general_page_image_compress_title)) },
-+                        supportingContent = { Text(stringResource(R.string.setting_general_page_image_compress_desc)) },
-+                        trailingContent = {
-+                            Switch(
-+                                checked = settings.imageCompressEnabled,
-+                                onCheckedChange = {
-+                                    vm.updateSettings(settings.copy(imageCompressEnabled = it))
-+                                }
-+                            )
-+                        },
-+                    )
-+                    if (settings.imageCompressEnabled) {
-+                        item(
-+                            headlineContent = { Text(stringResource(R.string.setting_general_page_image_compress_max_size_title)) },
-+                            supportingContent = {
-+                                OutlinedNumberInput(
-+                                    value = settings.imageCompressMaxBytes,
-+                                    onValueChange = {
-+                                        vm.updateSettings(settings.copy(imageCompressMaxBytes = it))
-+                                    },
-+                                    modifier = Modifier.fillMaxWidth(),
-+                                    label = stringResource(R.string.setting_general_page_image_compress_max_size_title),
-+                                )
-+                            },
-+                        )
-+                    }
-+                }
-+            }
-+
-             item {
-                 CardGroup(
-                     modifier = Modifier.padding(horizontal = 8.dp),
+ // 把取值收回合法范围，比如删掉搜索服务后选中的下标可能越界
+ private fun Settings.withValuesInRange(): Settings = copy(
++    imageCompressMaxBytes = imageCompressMaxBytes.coerceIn(100, 5000),
+     searchServiceSelected = searchServiceSelected.coerceIn(0, (searchServices.size - 1).coerceAtLeast(0)),
+     defaultTTSPlaybackSpeed = defaultTTSPlaybackSpeed.coerceIn(0.5f, 2.0f),
+ )
 diff --git a/app/src/main/res/values-ja/strings.xml b/app/src/main/res/values-ja/strings.xml
-index ff7810c..ada37c3 100644
+index d39d5d7..a4ad2f6 100644
 --- a/app/src/main/res/values-ja/strings.xml
 +++ b/app/src/main/res/values-ja/strings.xml
-@@ -1104,6 +1104,10 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
+@@ -1086,6 +1086,10 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
    <string name="setting_page_preferences_notification_desc">アップデート通知、メッセージ生成通知</string>
    <string name="setting_page_preferences_general">一般</string>
    <string name="setting_page_preferences_general_desc">操作動作、スクロール、入力設定</string>
@@ -299,10 +255,10 @@ index ff7810c..ada37c3 100644
    <string name="setting_page_preferences_ui_desc">メッセージ表示、フォント、コードブロック</string>
    <string name="skills_page_import_from_file">ファイルからインポート</string>
 diff --git a/app/src/main/res/values-ko-rKR/strings.xml b/app/src/main/res/values-ko-rKR/strings.xml
-index 1e6a846..9e76743 100644
+index 50e31d4..1eecc05 100644
 --- a/app/src/main/res/values-ko-rKR/strings.xml
 +++ b/app/src/main/res/values-ko-rKR/strings.xml
-@@ -1104,6 +1104,10 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네
+@@ -1086,6 +1086,10 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네
    <string name="setting_page_preferences_notification_desc">업데이트 알림, 메시지 생성 알림</string>
    <string name="setting_page_preferences_general">일반</string>
    <string name="setting_page_preferences_general_desc">상호작용 방식, 스크롤, 입력 설정</string>
@@ -314,10 +270,10 @@ index 1e6a846..9e76743 100644
    <string name="setting_page_preferences_ui_desc">메시지 표시, 글꼴, 코드 블록</string>
    <string name="skills_page_import_from_file">파일에서 가져오기</string>
 diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
-index 0cb455b..011fd5f 100644
+index c42eaac..bf6a07c 100644
 --- a/app/src/main/res/values-ru/strings.xml
 +++ b/app/src/main/res/values-ru/strings.xml
-@@ -1104,6 +1104,10 @@
+@@ -1086,6 +1086,10 @@
    <string name="setting_page_preferences_notification_desc">Уведомления об обновлениях и генерации сообщений</string>
    <string name="setting_page_preferences_general">Общие</string>
    <string name="setting_page_preferences_general_desc">Поведение взаимодействия, прокрутка, настройки ввода</string>
@@ -329,10 +285,10 @@ index 0cb455b..011fd5f 100644
    <string name="setting_page_preferences_ui_desc">Отображение сообщений, шрифты, блоки кода</string>
    <string name="skills_page_import_from_file">Импортировать из файла</string>
 diff --git a/app/src/main/res/values-zh-rTW/strings.xml b/app/src/main/res/values-zh-rTW/strings.xml
-index 1f0fd2f..ccd3175 100644
+index 4e53ff7..9c8be81 100644
 --- a/app/src/main/res/values-zh-rTW/strings.xml
 +++ b/app/src/main/res/values-zh-rTW/strings.xml
-@@ -1102,6 +1102,10 @@
+@@ -1084,6 +1084,10 @@
    <string name="setting_page_preferences_notification_desc">更新提醒、訊息產生通知</string>
    <string name="setting_page_preferences_general">一般</string>
    <string name="setting_page_preferences_general_desc">互動行為、捲動、輸入設定</string>
@@ -344,10 +300,10 @@ index 1f0fd2f..ccd3175 100644
    <string name="setting_page_preferences_ui_desc">訊息顯示、字型、程式碼區塊</string>
    <string name="skills_page_import_from_file">從檔案匯入</string>
 diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
-index 5392d2c..8601eb8 100644
+index 0390247..558685b 100644
 --- a/app/src/main/res/values-zh/strings.xml
 +++ b/app/src/main/res/values-zh/strings.xml
-@@ -1141,6 +1141,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
+@@ -1124,6 +1124,10 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
    <string name="setting_page_preferences_notification_desc">更新提醒、消息生成通知</string>
    <string name="setting_page_preferences_general">常规</string>
    <string name="setting_page_preferences_general_desc">交互行为、滚动、输入设置</string>
@@ -359,10 +315,10 @@ index 5392d2c..8601eb8 100644
    <string name="setting_page_preferences_ui_desc">消息显示、字体、代码块</string>
    <string name="skills_page_import_from_file">从文件导入</string>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index 42b6417..7ed1b8c 100644
+index fe5ac8e..53d3967 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
-@@ -846,6 +846,10 @@
+@@ -830,6 +830,10 @@
    <string name="setting_page_preferences_notification_desc">Update alerts, message generation notifications</string>
    <string name="setting_page_preferences_general">General</string>
    <string name="setting_page_preferences_general_desc">Interaction behavior, scrolling, input settings</string>
@@ -373,3 +329,25 @@ index 42b6417..7ed1b8c 100644
    <string name="setting_page_preferences_ui">UI Preferences</string>
    <string name="setting_page_preferences_ui_desc">Message display, fonts, code blocks</string>
    <string name="setting_page_preferences_network">Network</string>
+diff --git a/app/src/test/java/me/rerere/rikkahub/data/datastore/SettingsFieldsTest.kt b/app/src/test/java/me/rerere/rikkahub/data/datastore/SettingsFieldsTest.kt
+index 714423e..475c7af 100644
+--- a/app/src/test/java/me/rerere/rikkahub/data/datastore/SettingsFieldsTest.kt
++++ b/app/src/test/java/me/rerere/rikkahub/data/datastore/SettingsFieldsTest.kt
+@@ -111,6 +111,8 @@ private fun id(n: Int) = Uuid.parse("00000000-0000-0000-0000-%012d".format(n))
+ 
+ // 每个字段都取了和默认值不同的值
+ private val SAMPLE = Settings(
++    imageCompressEnabled = true,
++    imageCompressMaxBytes = 750,
+     dynamicColor = false,
+     themeId = "custom",
+     customThemes = listOf(CustomTheme(id = "theme", name = "Theme")),
+@@ -165,6 +167,8 @@ private val SAMPLE = Settings(
+ )
+ 
+ private val STORED_KEYS = setOf(
++    "image_compress_enabled",
++    "image_compress_max_bytes",
+     "dynamic_color",
+     "theme_id",
+     "custom_themes",

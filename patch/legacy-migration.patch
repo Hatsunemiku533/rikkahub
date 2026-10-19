@@ -1,0 +1,356 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index ce7b7ed..6595f2e 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -321,6 +321,7 @@ dependencies {
+ 
+     // tests
+     testImplementation(libs.junit)
++    testImplementation("org.xerial:sqlite-jdbc:3.50.3.0")
+     testImplementation(libs.kotlinx.coroutines.test)
+     androidTestImplementation(libs.androidx.junit)
+     androidTestImplementation(libs.androidx.espresso.core)
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
+index 08e92f3..2b91b02 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
+@@ -72,9 +72,6 @@ import me.rerere.rikkahub.utils.JsonInstant
+         AutoMigration(from = 21, to = 22),
+         AutoMigration(from = 22, to = 23, spec = Migration_22_23::class),
+         AutoMigration(from = 23, to = 24),
+-        AutoMigration(from = 24, to = 25),
+-        AutoMigration(from = 25, to = 26),
+-        AutoMigration(from = 26, to = 27),
+         AutoMigration(from = 28, to = 29, spec = Migration_28_29::class),
+         AutoMigration(from = 29, to = 30),
+     ]
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
+index b7cb295..88a0403 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
+@@ -11,6 +11,9 @@ import me.rerere.rikkahub.data.db.migrations.Migration_13_14
+ import me.rerere.rikkahub.data.db.migrations.Migration_14_15
+ import me.rerere.rikkahub.data.db.migrations.Migration_15_16
+ import me.rerere.rikkahub.data.db.migrations.Migration_27_28
++import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_24_25
++import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_25_26
++import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_26_27
+ 
+ /** Shared schema, migrations and extensions for the app and staged backup validation. */
+ internal object AppDatabaseFactory {
+@@ -24,6 +27,9 @@ internal object AppDatabaseFactory {
+                 Migration_14_15,
+                 Migration_15_16,
+                 Migration_27_28,
++                LegacyPatchMigration_24_25,
++                LegacyPatchMigration_25_26,
++                LegacyPatchMigration_26_27,
+             )
+             .addCallback(object : RoomDatabase.Callback() {
+                 override fun onOpen(db: SupportSQLiteDatabase) {
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyCompression.kt b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyCompression.kt
+new file mode 100644
+index 0000000..e600ba7
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyCompression.kt
+@@ -0,0 +1,39 @@
++package me.rerere.rikkahub.data.db.migrations
++
++import me.rerere.ai.ui.UIMessage
++import me.rerere.rikkahub.utils.JsonInstant
++import kotlin.uuid.Uuid
++
++// Migration-only compatibility. No legacy flags or behavior enter the live model.
++internal data class LegacyCompressionNode(
++    val id: String,
++    val messages: String,
++    val selectIndex: Int,
++    val compressed: Boolean = false,
++    val isSummary: Boolean = false,
++)
++
++internal fun convertLegacyCompression(nodes: List<LegacyCompressionNode>): List<LegacyCompressionNode> {
++    if (nodes.none { it.compressed || it.isSummary }) return nodes
++    val summaries = nodes.filter { it.isSummary }.map { node ->
++        val messages = JsonInstant.decodeFromString<List<UIMessage>>(node.messages)
++        requireNotNull(messages.getOrNull(node.selectIndex)) { "Invalid legacy summary branch" }.toText()
++    }
++    val summary = summaries.joinToString("\n\n").trim()
++    check(summary.isNotBlank()) { "Archived history has no usable legacy summary" }
++    val cut = nodes.indexOfLast { it.compressed || it.isSummary }
++    // The old format is summaries + archived originals + retained recent nodes.
++    // Refuse ambiguous interleaving rather than dropping a live message from context.
++    check(nodes.take(cut + 1).all { it.compressed || it.isSummary }) {
++        "Legacy compressed history is interleaved with active messages"
++    }
++    val checkpoint = UIMessage.user(summary).copy(isContextCheckpoint = true)
++    val newNode = LegacyCompressionNode(
++        id = Uuid.random().toString(),
++        messages = JsonInstant.encodeToString(listOf(checkpoint)),
++        selectIndex = 0,
++    )
++    // All original rows remain byte-for-byte intact, including IDs, attachments,
++    // selected branches and old summaries. Only insert an official checkpoint.
++    return nodes.take(cut + 1) + newNode + nodes.drop(cut + 1)
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt
+new file mode 100644
+index 0000000..f7055b9
+--- /dev/null
++++ b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt
+@@ -0,0 +1,75 @@
++package me.rerere.rikkahub.data.db.migrations
++
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++// The old fork used schema 25/26 for different columns than upstream. Override only
++// these edges; continue with the official memory and later migrations afterwards.
++val LegacyPatchMigration_24_25 = object : Migration(24, 25) {
++    override fun migrate(db: SupportSQLiteDatabase) {
++        if ("shell_compatibility_mode" !in db.columnNames("workspaces")) {
++            db.execSQL("ALTER TABLE workspaces ADD COLUMN shell_compatibility_mode INTEGER NOT NULL DEFAULT 0")
++        }
++    }
++}
++
++val LegacyPatchMigration_25_26 = object : Migration(25, 26) {
++    override fun migrate(db: SupportSQLiteDatabase) = ensureMediaTables(db)
++}
++
++val LegacyPatchMigration_26_27 = object : Migration(26, 27) {
++    override fun migrate(db: SupportSQLiteDatabase) {
++        // Early fork 25 also missed upstream's workspace compatibility column.
++        LegacyPatchMigration_24_25.migrate(db)
++        // Old fork 26 never had upstream's media tables.
++        ensureMediaTables(db)
++        if ("config" !in db.columnNames("ConversationEntity")) {
++            db.execSQL("ALTER TABLE ConversationEntity ADD COLUMN config TEXT NOT NULL DEFAULT ''")
++        }
++        val columns = db.columnNames("message_node")
++        if ("compressed" !in columns && "is_summary" !in columns) return
++        check("compressed" in columns && "is_summary" in columns) { "Incomplete legacy compression schema" }
++        // Room encloses the migration in a transaction. A malformed legacy summary
++        // fails the upgrade atomically instead of silently resending archived history.
++        db.execSQL("CREATE TABLE `_legacy_message_node` (`id` TEXT NOT NULL, `conversation_id` TEXT NOT NULL, `node_index` INTEGER NOT NULL, `messages` TEXT NOT NULL, `select_index` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`conversation_id`) REFERENCES `ConversationEntity`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)")
++        val conversationIds = mutableListOf<String>()
++        db.query("SELECT DISTINCT conversation_id FROM message_node").use { cursor ->
++            while (cursor.moveToNext()) conversationIds.add(cursor.getString(0))
++        }
++        conversationIds.forEach { conversationId ->
++            val nodes = mutableListOf<LegacyCompressionNode>()
++            db.query(
++                "SELECT id, messages, select_index, compressed, is_summary FROM message_node WHERE conversation_id = ? ORDER BY node_index",
++                arrayOf(conversationId),
++            ).use { cursor ->
++                while (cursor.moveToNext()) nodes.add(LegacyCompressionNode(
++                    id = cursor.getString(0), messages = cursor.getString(1), selectIndex = cursor.getInt(2),
++                    compressed = cursor.getInt(3) != 0, isSummary = cursor.getInt(4) != 0,
++                ))
++            }
++            convertLegacyCompression(nodes).forEachIndexed { index, node ->
++                db.execSQL(
++                    "INSERT INTO _legacy_message_node (id, conversation_id, node_index, messages, select_index) VALUES (?, ?, ?, ?, ?)",
++                    arrayOf(node.id, conversationId, index, node.messages, node.selectIndex),
++                )
++            }
++        }
++        db.execSQL("DROP TABLE message_node")
++        db.execSQL("ALTER TABLE _legacy_message_node RENAME TO message_node")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_message_node_conversation_id ON message_node (conversation_id)")
++    }
++}
++
++private fun SupportSQLiteDatabase.columnNames(table: String): Set<String> =
++    query("PRAGMA table_info(`$table`)").use { cursor ->
++        buildSet { while (cursor.moveToNext()) add(cursor.getString(1)) }
++    }
++
++private fun ensureMediaTables(db: SupportSQLiteDatabase) {
++    db.execSQL("CREATE TABLE IF NOT EXISTS `media_creation_session` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `draft` TEXT NOT NULL, `create_at` INTEGER NOT NULL, `update_at` INTEGER NOT NULL, PRIMARY KEY(`id`))")
++    db.execSQL("CREATE TABLE IF NOT EXISTS `media_creation_node` (`id` TEXT NOT NULL, `session_id` TEXT NOT NULL, `selected_record_id` TEXT NOT NULL, `create_at` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`session_id`) REFERENCES `media_creation_session`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
++    db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_creation_node_session_id` ON `media_creation_node` (`session_id`)")
++    db.execSQL("CREATE TABLE IF NOT EXISTS `media_creation_record` (`id` TEXT NOT NULL, `session_id` TEXT NOT NULL, `node_id` TEXT NOT NULL, `provider_id` TEXT NOT NULL, `provider_name` TEXT NOT NULL, `model_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `prompt` TEXT NOT NULL, `params` TEXT NOT NULL, `inputs` TEXT NOT NULL, `status` TEXT NOT NULL, `task_id` TEXT, `error` TEXT, `outputs` TEXT NOT NULL, `create_at` INTEGER NOT NULL, `update_at` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`session_id`) REFERENCES `media_creation_session`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`node_id`) REFERENCES `media_creation_node`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
++    db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_creation_record_session_id` ON `media_creation_record` (`session_id`)")
++    db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_creation_record_node_id` ON `media_creation_record` (`node_id`)")
++}
+diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt
+new file mode 100644
+index 0000000..dc9f2a9
+--- /dev/null
++++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt
+@@ -0,0 +1,51 @@
++package me.rerere.rikkahub.data.db.migrations
++
++import me.rerere.ai.ui.UIMessage
++import me.rerere.ai.ui.limitContext
++import me.rerere.rikkahub.utils.JsonInstant
++import org.junit.Assert.*
++import org.junit.Test
++
++class LegacyCompressionTest {
++    private fun node(id: String, text: String, compressed: Boolean = false, summary: Boolean = false) =
++        LegacyCompressionNode(id, JsonInstant.encodeToString(listOf(UIMessage.user(text))), 0, compressed, summary)
++
++    @Test
++    fun `upgrade preserves opaque originals and selected branches while keeping only summary and recent context`() {
++        val summary = node("s", "important decisions", summary = true)
++        val archived = node("a", "old text and attachments", compressed = true).copy(
++            messages = JsonInstant.encodeToString(listOf(UIMessage.user("branch A"), UIMessage.user("branch B"))),
++            selectIndex = 1,
++        )
++        val recent = node("r", "recent exact text")
++        val converted = convertLegacyCompression(listOf(summary, archived, recent))
++        assertEquals(listOf(summary, archived, recent), converted.filter { it.id in setOf("s", "a", "r") })
++        val messages = converted.map { JsonInstant.decodeFromString<List<UIMessage>>(it.messages)[it.selectIndex] }
++        assertEquals(listOf("important decisions", "recent exact text"), messages.limitContext(0).map { it.toText() })
++        assertEquals(1, messages.count { it.isContextCheckpoint })
++    }
++
++    @Test
++    fun `all summary chunks reach the new checkpoint`() {
++        val converted = convertLegacyCompression(listOf(node("s1", "first", summary = true), node("s2", "second", summary = true), node("a", "old", compressed = true)))
++        val checkpoint = JsonInstant.decodeFromString<List<UIMessage>>(converted.last().messages).single()
++        assertTrue(checkpoint.isContextCheckpoint)
++        assertEquals("first\n\nsecond", checkpoint.toText())
++    }
++
++    @Test
++    fun `uncompressed conversation is unchanged`() {
++        val nodes = listOf(node("u", "hi"))
++        assertSame(nodes, convertLegacyCompression(nodes))
++    }
++
++    @Test(expected = IllegalStateException::class)
++    fun `missing summary fails instead of exposing archived messages`() {
++        convertLegacyCompression(listOf(node("a", "old", compressed = true)))
++    }
++
++    @Test(expected = IllegalStateException::class)
++    fun `ambiguous interleaving fails instead of silently dropping active context`() {
++        convertLegacyCompression(listOf(node("s", "summary", summary = true), node("live", "keep"), node("a", "old", compressed = true)))
++    }
++}
+diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
+new file mode 100644
+index 0000000..65cd5a1
+--- /dev/null
++++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
+@@ -0,0 +1,117 @@
++package me.rerere.rikkahub.data.db.migrations
++
++import android.database.Cursor
++import androidx.sqlite.db.SupportSQLiteDatabase
++import kotlinx.serialization.json.*
++import me.rerere.ai.ui.UIMessage
++import me.rerere.rikkahub.utils.JsonInstant
++import org.junit.Assert.*
++import org.junit.Test
++import java.io.File
++import java.lang.reflect.Proxy
++import java.sql.Connection
++import java.sql.DriverManager
++
++/** Executes the real Android migration against SQLite on the JVM. No mocked SQL. */
++class LegacyPatchMigrationTest {
++    private fun schema(version: Int): JsonObject {
++        val root = listOf(File("schemas"), File("app/schemas")).first { it.isDirectory }
++        return JsonInstant.parseToJsonElement(File(root, "me.rerere.rikkahub.data.db.AppDatabase/$version.json").readText())
++            .jsonObject.getValue("database").jsonObject
++    }
++
++    private fun Connection.createSchema(version: Int) {
++        schema(version).getValue("entities").jsonArray.forEach { value ->
++            val entity = value.jsonObject
++            val table = entity.getValue("tableName").jsonPrimitive.content
++            createStatement().use { it.execute(entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)) }
++            entity["indices"]?.jsonArray?.forEach { index ->
++                createStatement().use { it.execute(index.jsonObject.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)) }
++            }
++        }
++    }
++
++    private fun database(connection: Connection): SupportSQLiteDatabase = Proxy.newProxyInstance(
++        SupportSQLiteDatabase::class.java.classLoader, arrayOf(SupportSQLiteDatabase::class.java),
++    ) { _, method, args ->
++        when (method.name) {
++            "execSQL" -> {
++                connection.prepareStatement(args!![0] as String).use { statement ->
++                    if (args.size > 1) (args[1] as Array<*>).forEachIndexed { i, value -> statement.setObject(i + 1, value) }
++                    statement.execute()
++                }
++                null
++            }
++            "query" -> {
++                val statement = connection.prepareStatement(args!![0] as String)
++                if (args.size > 1 && args[1] is Array<*>) (args[1] as Array<*>).forEachIndexed { i, value -> statement.setObject(i + 1, value) }
++                val result = statement.executeQuery()
++                Proxy.newProxyInstance(Cursor::class.java.classLoader, arrayOf(Cursor::class.java)) { _, cursorMethod, cursorArgs ->
++                    when (cursorMethod.name) {
++                        "moveToNext" -> result.next()
++                        "getString" -> result.getString((cursorArgs!![0] as Int) + 1)
++                        "getInt" -> result.getInt((cursorArgs!![0] as Int) + 1)
++                        "close" -> { result.close(); statement.close(); null }
++                        else -> error("Unexpected cursor method ${cursorMethod.name}")
++                    }
++                }
++            }
++            else -> error("Unexpected database method ${method.name}")
++        }
++    } as SupportSQLiteDatabase
++
++    @Test
++    fun `official and fork schemas converge without losing branches or favorites`() {
++        for (version in 24..26) for (patched in listOf(false, true)) {
++            DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
++                connection.createStatement().use { it.execute("PRAGMA foreign_keys=ON") }
++                // Fork 26 is upstream 25 with two added flags, not upstream 26.
++                connection.createSchema(if (patched && version == 26) 25 else version)
++                val db = database(connection)
++                if (patched) {
++                    db.execSQL("ALTER TABLE message_node ADD COLUMN compressed INTEGER NOT NULL DEFAULT 0")
++                    db.execSQL("ALTER TABLE message_node ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0")
++                    // The early fork 25 also predates the workspace column.
++                    if (version == 25) db.execSQL("ALTER TABLE workspaces DROP COLUMN shell_compatibility_mode")
++                }
++                db.execSQL("INSERT INTO ConversationEntity (id,title,nodes,create_at,update_at) VALUES ('c','test','[]',1,1)")
++                val rows = listOf("s" to listOf(UIMessage.user("summary")), "a" to listOf(UIMessage.user("branch A"), UIMessage.user("branch B")), "r" to listOf(UIMessage.user("recent")))
++                rows.forEachIndexed { i, (id, messages) ->
++                    db.execSQL("INSERT INTO message_node (id,conversation_id,node_index,messages,select_index) VALUES (?, 'c', ?, ?, ?)", arrayOf(id, i, JsonInstant.encodeToString(messages), if (id == "a") 1 else 0))
++                }
++                db.execSQL("INSERT INTO favorites (id,type,ref_key,ref_json,snapshot_json,created_at,updated_at) VALUES ('f','message','a','{}','{}',1,1)")
++                if (patched) {
++                    db.execSQL("UPDATE message_node SET is_summary=1 WHERE id='s'")
++                    db.execSQL("UPDATE message_node SET compressed=1 WHERE id='a'")
++                }
++                if (version <= 24) LegacyPatchMigration_24_25.migrate(db)
++                if (version <= 25) LegacyPatchMigration_25_26.migrate(db)
++                LegacyPatchMigration_26_27.migrate(db)
++                // Compare every table/column/index with official 27 (including media tables absent in fork 26).
++                DriverManager.getConnection("jdbc:sqlite::memory:").use { expected ->
++                    expected.createSchema(27)
++                    schema(27).getValue("entities").jsonArray.forEach { entity ->
++                        val table = entity.jsonObject.getValue("tableName").jsonPrimitive.content
++                        fun columns(c: Connection): List<String> = c.createStatement().use { statement ->
++                            statement.executeQuery("PRAGMA table_info(`$table`)").use { result -> buildList {
++                                while (result.next()) add((1..6).joinToString("|") { result.getString(it) ?: "NULL" })
++                            } }
++                        }
++                        assertEquals("schema $version patched=$patched table=$table", columns(expected), columns(connection))
++                    }
++                }
++                connection.createStatement().use { statement ->
++                    statement.executeQuery("SELECT messages,select_index FROM message_node WHERE id='a'").use { result ->
++                        assertTrue(result.next()); assertEquals(1, result.getInt(2))
++                        assertEquals(rows[1].second, JsonInstant.decodeFromString<List<UIMessage>>(result.getString(1)))
++                    }
++                    statement.executeQuery("SELECT count(*) FROM favorites").use { result -> result.next(); assertEquals(1, result.getInt(1)) }
++                    statement.executeQuery("SELECT count(*) FROM message_node").use { result -> result.next(); assertEquals(if (patched) 4 else 3, result.getInt(1)) }
++                    statement.executeQuery("PRAGMA foreign_key_check").use { result -> assertFalse(result.next()) }
++                }
++                // Running the conditional edge again is harmless once old columns are gone.
++                LegacyPatchMigration_26_27.migrate(db)
++            }
++        }
++    }
++}
