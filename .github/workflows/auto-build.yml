@@ -146,7 +146,8 @@ jobs:
         working-directory: upstream
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyCompressionTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyPatchMigrationTest" --tests "me.rerere.rikkahub.data.datastore.SettingsFieldsTest" --tests "me.rerere.rikkahub.data.ai.CompressionSummaryTest" --tests "me.rerere.rikkahub.data.model.ConversationMessagesTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :ai:testDebugUnitTest --tests "me.rerere.ai.ui.MessageContextLimitTest" --no-daemon --stacktrace
           ./gradlew :workspace:testDebugUnitTest --tests "me.rerere.workspace.WorkspaceTransferTest" --no-daemon --stacktrace
       - name: gradle build
         working-directory: upstream
@@ -161,8 +162,7 @@ jobs:
           body: |
             基于上游 `${{ needs.check.outputs.tag }}`，附加补丁：
             - 可开关的图片压缩，默认关闭；大小可配置（100–5000 KB，默认 500 KB），GIF 保持原样。
-            - 压缩对话支持「不限」目标大小，原始消息保留可见，仅发送摘要和最近消息给 AI。
-            - 保留最近消息的分支；压缩期间修改消息会中止写回，避免旧快照覆盖。
+            - 对话压缩完全采用官方实现，旧魔改摘要一次性迁移为官方检查点，保留原始消息、附件、分支和收藏。
             - 模式注入支持 `{{time}}`；Markdown 后台流式导出，并保留思考内容开关。
             - 工作区文件区双面板、当前目录路径、长按操作菜单和左滑范围多选；复制/移动到另一侧，保留 Rootfs 原浏览方式。
 

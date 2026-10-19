@@ -1,61 +1,82 @@
 # Patched release builds
 
-Patch base: upstream **2.5.6**, commit `447bb7e89710d31f1204d7a2973baa19fdbd5b28`.
-Use `bash scripts/apply-patches.sh <clean-upstream-checkout>` to apply the image
-patch, the UX patch, then the workspace-browser patch. Strict application is intentional: do not use fuzzy
-repairs, `--reject` or suppressed errors in CI. Future releases can require a rebase.
+Patch base: upstream **3.0.0**, commit `55a108a4477fa308d6eacbe22ebf2fb0ceea1420`.
+Apply with `bash scripts/apply-patches.sh <clean-upstream-checkout>` in this order:
 
-The fork's application source is not the build input: an upstream release plus
-these patches is. Editing only the fork's Kotlin files does not change the APK.
-Master patch/CI/script changes trigger the actual build, tests, signing and ntfy.
-`verify-build` uses that same pipeline. Manual runs force rebuilding; scheduled
-runs compare both the tag and patch/CI fingerprint of the published build.
-Compatibility checks run before large cache restores. Cache keys use upstream source.
+1. `image-compress.patch`: optional outgoing image compression, existing settings retained.
+2. `user-experience.patch`: `{{time}}` and streaming Markdown export without embedded images.
+3. `workspace-browser.patch`: the existing dual-pane workspace file browser, ported to 3.0.
+4. `legacy-migration.patch`: one-time upgrade compatibility for the old fork database.
 
-Patched database schema remains 26 with guarded 24→25 and 25→26 migrations and
-unchanged `compressed` / `is_summary` columns. Review future upstream schema changes.
+CI builds an upstream release **plus these patches**, not the fork's root application
+source. Strict sequential application is intentional: no fuzzy/reject repairs in CI.
+Rebase and test before changing the upstream base. Do not edit only root Kotlin files.
 
-Compression keeps originals and attachments visible, and preserves recent node IDs,
-branches and favorites. Recompression uses retained originals, excluding old summaries.
-Changed messages during a compression request abort writeback. Unlimited removes
-the requested summary-size target; it cannot bypass model context limits or guarantee
-lossless summaries. Source messages are no longer silently cut to 2000 characters.
+## Official conversation compression
 
-Image compression is optional (off by default), with a 100–5000 KiB JPEG byte limit
-(500 KiB default), before Base64 encoding. GIFs remain unchanged. Further resizing
-enforces the byte limit after the quality-search budget is exhausted.
+All live compression, model selection, settings, checkpoint rendering and request
+context selection use the unmodified upstream implementation. The old target-token
+option, custom compression model/prompt, compressed node flags, UI tags and generation
+merge helpers have been removed from the live code. No old `PatchedHistory` remains.
 
-Markdown export replaces message and tool-output images with text placeholders,
-without reading image files or embedding Base64/URLs. Image export is unchanged.
+Upstream 3.0.0 summarizes the current context with the current chat model. It retains
+history and inserts an official checkpoint; there is no keep-recent or target-token
+setting. Recompression summarizes the last checkpoint and subsequent messages.
 
-Tests cover Markdown options/content/image placeholders/streaming/cancellation/errors, preserved recent
-branches, stale compression edits/deletions, and generation around archived nodes.
+## Upgrade compatibility
 
-## Workspace file browser
+The old fork used schema 25/26 for custom `compressed` and `is_summary` columns;
+upstream 26 instead added media-creation tables. Never use an unmodified automatic
+26→27 migration on that fork database.
 
-`workspace-browser.patch` adds two independent compact file panes in the Files
-area. Rootfs keeps its existing browser. Basic/Files pages switch only with the
-bottom navigation buttons; horizontal page swipes are disabled.
+The compatibility patch replaces only 24→25, 25→26 and 26→27 with guarded migrations:
 
-The top path follows the last touched pane and uses `/workspace` paths. Tap the
-path to view/copy it; refresh and import use that pane. Both panes keep their
-own directory, scroll and selection. Long press a file/folder for copy, move,
-delete, full-name rename, copy path and multi-select. File export/share reuse
-the existing implementation, including batch export and image previews.
+- Add the workspace compatibility column if missing (also handles early fork 25).
+- Create the official media tables/indices if absent, including when starting at fork 26.
+- Add official conversation config, convert old summaries, and rebuild message_node
+  without custom columns, matching official schema 27 exactly.
+- Continue through upstream's normal 27→28 memory migration and later migrations to
+  **official schema 30**. No fork schema bump or destructive fallback is introduced.
 
-Swipe left on the first and last entries to select the inclusive range in
-either direction. The second endpoint clears the anchor; subsequent ranges
-add to the selection. Tap entries while selecting to toggle them. Back clears
-the active selection before navigating up. Names use at most two lines.
+Each legacy conversation retains its original nodes, message JSON, selected branches,
+IDs, attachments and favorites. Its old summary chunks are joined in a new official
+checkpoint inserted after the archived prefix and before retained recent messages.
+No model/API call is made. Old summary nodes remain visible as historical records.
+After migration only the new checkpoint and following messages reach the model.
 
-Copy/move confirmation freezes the source list and the opposite pane's target
-directory. Existing destinations require replace, skip or a different full
-filename; folder replacement replaces the whole folder (no implicit merge).
-Copies are staged and replacements backed up before commit. Self, descendant,
-ancestor, root and escaping targets are rejected. Nested links are copied as
-links; recursive deletion and cleanup never follow them. A failed restore leaves the backup in
-place. File operations do not run concurrently in the browser.
+Missing/invalid summaries or interleaved archived/live nodes abort the migration in
+Room's transaction; they never trigger deletion/reset or silently resend all history.
+Only migration code reads old flags. Uncompressed and official databases retain their
+normal context behavior. This is an upgrade path, not a downgrade path to 2.5.6.
 
-Regression tests cover forward/reverse ranges, panel isolation, stale directory
-responses, frozen targets, conflict handling, Unicode/binary transfers, complete
-extension changes, overwrite guards, path guards and symlink-safe cleanup.
+JVM tests execute the real compatibility migration through sqlite-jdbc against official
+and fork 24/25/26 fixtures, checking columns, foreign keys, branches and favorites.
+Pure context tests check chunk joining and the actual upstream context selection.
+Android device installation/restore remains a separate check.
+
+## Retained features
+
+Image compression is off by default and retains the old DataStore keys and backup
+fields. The configured limit is 100–5000 KiB (500 KiB default) for JPEG bytes before
+Base64 encoding. GIFs are unchanged. Enabling the option uses 1600px/4MP sampling and
+iteratively reduces quality/size; further resizing enforces the limit. The settings
+UI uses the new CardGroup design and updates current state through upstream's API.
+
+Markdown export writes on a background dispatcher, supports the reasoning toggle,
+propagates cancellation/errors, and replaces message/tool images with placeholders.
+It never reads image files or embeds Base64/image URLs. Image export is unchanged.
+`{{time}}` remains local time formatted HH:mm.
+
+The Files area has two independent panes; Rootfs retains its upstream browser and
+Alpine installation support. Basic/Files switch with bottom buttons; horizontal page
+swipes are disabled. The path follows the active pane and uses `/workspace` paths.
+
+Long press provides copy/move/delete/full-name rename/copy path/multi-select, alongside
+export/share. Swipe left on two endpoints selects the inclusive range. Both panes
+retain their directory, scroll and selection. Names use at most two lines.
+
+Copy/move freezes sources and the opposite pane's target. Existing targets require
+replace/skip/rename; directory replacement replaces the whole directory. Transfers
+are staged with replacement backups. Root, traversal, ancestor/descendant and escaping
+targets are rejected. Recursive deletion does not follow symlinks. Operations do not
+run concurrently. Existing workspace regression tests are retained.

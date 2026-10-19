@@ -21,479 +21,8 @@ index e454749..362025f 100644
          placeholder("model_id", { Text(stringResource(R.string.placeholder_model_id)) }) {
              it.model.modelId
          }
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-index 296fbdc..887f313 100644
---- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-@@ -38,7 +38,7 @@ import me.rerere.rikkahub.utils.JsonInstant
-         WorkspaceEntity::class,
-         FolderEntity::class,
-     ],
--    version = 25,
-+    version = 26,
-     autoMigrations = [
-         AutoMigration(from = 1, to = 2),
-         AutoMigration(from = 2, to = 3),
-@@ -58,7 +58,6 @@ import me.rerere.rikkahub.utils.JsonInstant
-         AutoMigration(from = 21, to = 22),
-         AutoMigration(from = 22, to = 23, spec = Migration_22_23::class),
-         AutoMigration(from = 23, to = 24),
--        AutoMigration(from = 24, to = 25),
-     ]
- )
- @TypeConverters(TokenUsageConverter::class)
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
-index 5433d42..057ad71 100644
---- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
-@@ -10,13 +10,15 @@ import me.rerere.rikkahub.data.db.migrations.Migration_11_12
- import me.rerere.rikkahub.data.db.migrations.Migration_13_14
- import me.rerere.rikkahub.data.db.migrations.Migration_14_15
- import me.rerere.rikkahub.data.db.migrations.Migration_15_16
-+import me.rerere.rikkahub.data.db.migrations.PatchMigration_24_25
-+import me.rerere.rikkahub.data.db.migrations.PatchMigration_25_26
- 
- /** Shared schema, migrations and extensions for the app and staged backup validation. */
- internal object AppDatabaseFactory {
-     fun create(context: Context, name: String = SQLiteConfiguration.DATABASE_NAME): AppDatabase =
-         Room.databaseBuilder(context, AppDatabase::class.java, name)
-             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
--            .addMigrations(Migration_6_7, Migration_11_12, Migration_13_14, Migration_14_15, Migration_15_16)
-+            .addMigrations(Migration_6_7, Migration_11_12, Migration_13_14, Migration_14_15, Migration_15_16, PatchMigration_24_25, PatchMigration_25_26)
-             .addCallback(object : RoomDatabase.Callback() {
-                 override fun onOpen(db: SupportSQLiteDatabase) {
-                     val dictDir = SimpleDictManager.extractDict(context)
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt b/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
-index 6f0ba7f..ae7aeb0 100644
---- a/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/data/db/entity/MessageNodeEntity.kt
-@@ -28,5 +28,9 @@ data class MessageNodeEntity(
-     @ColumnInfo("messages")
-     val messages: String,  // JSON serialized List<UIMessage>
-     @ColumnInfo("select_index")
--    val selectIndex: Int
-+    val selectIndex: Int,
-+    @ColumnInfo("compressed", defaultValue = "0")
-+    val compressed: Boolean = false,
-+    @ColumnInfo("is_summary", defaultValue = "0")
-+    val isSummary: Boolean = false,
- )
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/migrations/PatchColumnMigrations.kt b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/PatchColumnMigrations.kt
-new file mode 100644
-index 0000000..c470974
---- /dev/null
-+++ b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/PatchColumnMigrations.kt
-@@ -0,0 +1,39 @@
-+package me.rerere.rikkahub.data.db.migrations
-+
-+import androidx.room.migration.Migration
-+import androidx.sqlite.db.SupportSQLiteDatabase
-+
-+private fun SupportSQLiteDatabase.hasColumn(table: String, column: String): Boolean {
-+    val cursor = query("PRAGMA table_info(`$table`)")
-+    try {
-+        val nameIndex = cursor.getColumnIndex("name")
-+        while (cursor.moveToNext()) {
-+            if (cursor.getString(nameIndex) == column) return true
-+        }
-+        return false
-+    } finally {
-+        cursor.close()
-+    }
-+}
-+
-+private fun SupportSQLiteDatabase.addColumnIfMissing(table: String, column: String, spec: String) {
-+    if (!hasColumn(table, column)) {
-+        execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $spec")
-+    }
-+}
-+
-+val PatchMigration_24_25 = object : Migration(24, 25) {
-+    override fun migrate(db: SupportSQLiteDatabase) {
-+        db.addColumnIfMissing("workspaces", "shell_compatibility_mode", "INTEGER NOT NULL DEFAULT 0")
-+        db.addColumnIfMissing("message_node", "compressed", "INTEGER NOT NULL DEFAULT 0")
-+        db.addColumnIfMissing("message_node", "is_summary", "INTEGER NOT NULL DEFAULT 0")
-+    }
-+}
-+
-+val PatchMigration_25_26 = object : Migration(25, 26) {
-+    override fun migrate(db: SupportSQLiteDatabase) {
-+        db.addColumnIfMissing("workspaces", "shell_compatibility_mode", "INTEGER NOT NULL DEFAULT 0")
-+        db.addColumnIfMissing("message_node", "compressed", "INTEGER NOT NULL DEFAULT 0")
-+        db.addColumnIfMissing("message_node", "is_summary", "INTEGER NOT NULL DEFAULT 0")
-+    }
-+}
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt b/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
-index 10a261e..83fc07b 100644
---- a/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt
-@@ -110,6 +110,10 @@ data class MessageNode(
-     val id: Uuid = Uuid.random(),
-     val messages: List<UIMessage>,
-     val selectIndex: Int = 0,
-+    // 该节点已被压缩：界面仍显示，但不发送给 AI
-+    val compressed: Boolean = false,
-+    // 该节点是压缩摘要：参与发送，但不参与后续压缩输入
-+    val isSummary: Boolean = false,
-     @Transient
-     val isFavorite: Boolean = false,
- ) {
-diff --git a/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt b/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
-index ad9761a..01b6877 100644
---- a/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/data/repository/ConversationRepository.kt
-@@ -471,7 +471,9 @@ class ConversationRepository(
-                             id = nodeId,
-                             messages = messages,
-                             selectIndex = entity.selectIndex,
--                            isFavorite = favoriteNodeIds.contains(nodeId)
-+                            isFavorite = favoriteNodeIds.contains(nodeId),
-+                            compressed = entity.compressed,
-+                            isSummary = entity.isSummary
-                         )
-                     )
-                 }
-@@ -488,7 +490,9 @@ class ConversationRepository(
-                 conversationId = conversationId,
-                 nodeIndex = index,
-                 messages = JsonInstant.encodeToString(node.messages),
--                selectIndex = node.selectIndex
-+                selectIndex = node.selectIndex,
-+                compressed = node.compressed,
-+                isSummary = node.isSummary
-             )
-         }
-         messageNodeDAO.insertAll(entities)
-diff --git a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-index 1022dad..34381bb 100644
---- a/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
-@@ -15,6 +15,8 @@ import kotlinx.coroutines.coroutineScope
- import kotlinx.coroutines.completeWith
- import kotlinx.coroutines.flow.Flow
- import kotlinx.coroutines.flow.MutableSharedFlow
-+import kotlinx.coroutines.sync.Mutex
-+import kotlinx.coroutines.sync.withLock
- import kotlinx.coroutines.flow.MutableStateFlow
- import kotlinx.coroutines.flow.SharedFlow
- import kotlinx.coroutines.flow.StateFlow
-@@ -81,6 +83,7 @@ import me.rerere.rikkahub.web.BadRequestException
- import me.rerere.rikkahub.web.NotFoundException
- import me.rerere.rikkahub.utils.applyPlaceholders
- import java.util.Locale
-+import java.util.concurrent.ConcurrentHashMap
- import kotlin.uuid.Uuid
- 
- private const val TAG = "ChatService"
-@@ -662,12 +665,14 @@ class ChatService(
-                 settings = settings,
-                 model = model,
-                 processingStatus = session.processingStatus,
--                messages = conversation.currentMessages.let {
--                    if (messageRange != null) {
--                        it.subList(messageRange.start, messageRange.endInclusive + 1)
--                    } else {
--                        it
--                    }
-+                messages = if (messageRange != null) {
-+                    // 重新生成路径：同样过滤 compressed 节点，否则压缩后的历史（含全部历史图片）会被整段重发
-+                    conversation.messageNodes.subList(messageRange.start, messageRange.endInclusive + 1)
-+                        .filterNot { it.compressed }
-+                        .map { it.messages[it.selectIndex] }
-+                } else {
-+                    conversation.messageNodes.filterNot { it.compressed }
-+                        .map { it.messages[it.selectIndex] }
-                 },
-                 assistant = assistant,
-                 conversationId = conversationId,
-@@ -705,8 +710,10 @@ class ChatService(
-             }.collect { chunk ->
-                 when (chunk) {
-                     is GenerationChunk.Messages -> {
--                        val updatedConversation = getConversationFlow(conversationId).value
--                            .updateCurrentMessages(chunk.messages)
-+                        val current = getConversationFlow(conversationId).value
-+                        val updatedConversation = current.copy(
-+                            messageNodes = mergePatchedGeneration(current.messageNodes, chunk.messages, messageRange)
-+                        )
-                         updateConversation(conversationId, updatedConversation)
- 
-                         // 通知等边缘副作用由 ChatNotificationManager 消费；
-@@ -855,8 +862,8 @@ class ChatService(
-                 params = backgroundTextGenerationParams(model, conversationId, settings.fastModelReasoningLevel),
-             )
- 
--            // 生成完，conversation可能不是最新了，因此需要重新获取
--            conversationRepo.getConversationById(conversation.id)?.let {
-+            // 生成完，conversation可能不是最新了，因此需要重新获取（以内存态为准，避免覆盖压缩标记）
-+            getConversationFlow(conversation.id).value.let {
-                 saveConversation(
-                     conversationId,
-                     it.copy(title = result.message.toText().trim())
-@@ -910,8 +917,8 @@ class ChatService(
-                 result.message.toText().split("\n").map { it.trim() }
-                     .filter { it.isNotBlank() }
- 
--            val latestConversation = conversationRepo.getConversationById(conversationId)
--                ?: sessionManager.get(conversationId)?.state?.value
-+            val latestConversation = sessionManager.get(conversationId)?.state?.value
-+                ?: conversationRepo.getConversationById(conversationId)
-                 ?: conversation
-             saveConversation(
-                 conversationId,
-@@ -928,6 +935,10 @@ class ChatService(
- 
-     // ---- 压缩对话历史 ----
- 
-+    // 2026-09-25 压缩互斥：防止同一对话并发压缩；配合下方"压缩时重读最新内存态"，
-+    // 消除双重压缩+删除摘要交错时用陈旧快照覆盖会话状态的竞态（当日 trplay21 事故根因）
-+    private val compressionMutexes = ConcurrentHashMap<Uuid, Mutex>()
-+
-     suspend fun compressConversation(
-         conversationId: Uuid,
-         conversation: Conversation,
-@@ -935,6 +946,13 @@ class ChatService(
-         targetTokens: Int,
-         keepRecentMessages: Int = 32
-     ): Result<Unit> = runCatching {
-+      sessionManager.withSession(conversationId) { session ->
-+      compressionMutexes.computeIfAbsent(conversationId) { Mutex() }.withLock {
-+        session.initialize {
-+            conversationRepo.getConversationById(conversationId) ?: conversation
-+        }
-+        check(!session.isGenerating) { "Wait for message generation to finish before compressing." }
-+        val conversation = session.state.value
-         val settings = settingsStore.settingsFlow.first()
-         val model = settings.findModelById(settings.compressModelId)
-             ?: settings.getCurrentChatModel()
-@@ -945,22 +963,17 @@ class ChatService(
-         val providerHandler = providerManager.getProviderByType(provider)
- 
-         val maxMessagesPerChunk = 256
--        val allMessages = conversation.currentMessages
-+        val nodes = conversation.messageNodes
- 
--        // Split messages into those to compress and those to keep
--        val messagesToCompress: List<UIMessage>
--        val messagesToKeep: List<UIMessage>
-+        // 摘要节点不参与压缩输入（旧摘要会被新摘要取代）
-+        val contentNodes = nodes.filterNot { it.isSummary }
- 
--        if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
--            messagesToCompress = allMessages.dropLast(keepRecentMessages)
--            messagesToKeep = allMessages.takeLast(keepRecentMessages)
--        } else if (keepRecentMessages > 0) {
--            // Not enough messages to compress while keeping recent ones
-+        require(keepRecentMessages >= 0 && targetTokens >= 0)
-+        if (contentNodes.size <= keepRecentMessages) {
-             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
--        } else {
--            messagesToCompress = allMessages
--            messagesToKeep = emptyList()
-         }
-+        val nodesToKeep = contentNodes.takeLast(keepRecentMessages)
-+        val nodesToCompress = contentNodes.dropLast(keepRecentMessages)
- 
-         fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
-             if (messages.size <= maxMessagesPerChunk) return listOf(messages)
-@@ -971,10 +984,10 @@ class ChatService(
-         }
- 
-         suspend fun compressMessages(messages: List<UIMessage>): String {
--            val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 2000) }
-+            val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText() }
-             val prompt = settings.compressPrompt.applyPlaceholders(
-                 "content" to contentToCompress,
--                "target_tokens" to targetTokens.toString(),
-+                "target_tokens" to if (targetTokens > 0) targetTokens.toString() else "unlimited (preserve all important information)",
-                 "additional_context" to if (additionalPrompt.isNotBlank()) {
-                     "Additional instructions from user: $additionalPrompt"
-                 } else "",
-@@ -992,25 +1005,25 @@ class ChatService(
-         }
- 
-         val compressedSummaries = coroutineScope {
--            splitMessages(messagesToCompress)
-+            splitMessages(nodesToCompress.map { it.currentMessage })
-                 .map { chunk -> async { compressMessages(chunk) } }
-                 .awaitAll()
-         }
- 
--        // Create new conversation with compressed history as multiple user messages + kept messages
--        val newMessageNodes = buildList {
--            compressedSummaries.forEach { summary ->
--                add(UIMessage.user(summary).toMessageNode())
--            }
--            addAll(messagesToKeep.map { it.toMessageNode() })
-+        // Preserve node IDs, alternatives and favorites. Reject edits made while the model was working.
-+        val exists = conversationRepo.existsConversationById(conversationId)
-+        val updated = synchronized(session) {
-+            check(!session.isGenerating) { "Conversation started generating during compression. Please retry." }
-+            finishPatchedCompression(conversation, session.state.value, compressedSummaries, nodesToCompress, nodesToKeep)
-+                .also { updateConversation(conversationId, it) }
-         }
--        val newConversation = conversation.copy(
--            messageNodes = newMessageNodes,
--            chatSuggestions = emptyList(),
--        )
--
--        saveConversation(conversationId, newConversation)
--    }
-+        // State was already committed above; saveConversation would reapply a snapshot after an IO suspension.
-+        if (exists) conversationRepo.updateConversation(updated) else conversationRepo.insertConversation(updated)
-+        dispatchNextQueuedMessage(conversationId)
-+        Unit
-+      }
-+      }
-+    }.onFailure { if (it is CancellationException) throw it }
- 
-     // ---- 对话状态更新 ----
- 
-diff --git a/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt b/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt
-new file mode 100644
-index 0000000..e59b094
---- /dev/null
-+++ b/app/src/main/java/me/rerere/rikkahub/service/PatchedHistory.kt
-@@ -0,0 +1,57 @@
-+package me.rerere.rikkahub.service
-+
-+import me.rerere.ai.ui.UIMessage
-+import me.rerere.rikkahub.data.model.Conversation
-+import me.rerere.rikkahub.data.model.MessageNode
-+import me.rerere.rikkahub.data.model.toMessageNode
-+
-+/** Incoming generation contains only active nodes; archived nodes must never consume an input slot. */
-+internal fun mergePatchedGeneration(
-+    nodes: List<MessageNode>,
-+    messages: List<UIMessage>,
-+    range: ClosedRange<Int>? = null,
-+): List<MessageNode> {
-+    val result = nodes.toMutableList()
-+    val inputIndices = if (range == null) nodes.indices else range.start..range.endInclusive
-+    var incoming = 0
-+    fun replaceAt(index: Int, message: UIMessage) {
-+        val node = result.getOrNull(index)
-+        if (node == null) {
-+            result.add(message.toMessageNode())
-+        } else {
-+            val existing = node.messages.indexOfFirst { it.id == message.id }
-+            result[index] = if (existing >= 0) {
-+                node.copy(messages = node.messages.map { if (it.id == message.id) message else it })
-+            } else {
-+                node.copy(messages = node.messages + message, selectIndex = node.messages.size)
-+            }
-+        }
-+    }
-+    for (index in inputIndices) {
-+        if (nodes[index].compressed) continue
-+        val message = messages.getOrNull(incoming) ?: break
-+        replaceAt(index, message)
-+        incoming++
-+    }
-+    // Regeneration can yield several turns (e.g. tool call + final answer), not several alternatives of one turn.
-+    var outputIndex = range?.let { it.endInclusive + 1 } ?: result.size
-+    messages.drop(incoming).forEach { message -> replaceAt(outputIndex++, message) }
-+    return result
-+}
-+
-+internal fun finishPatchedCompression(
-+    snapshot: Conversation,
-+    current: Conversation,
-+    summaries: List<String>,
-+    compressed: List<MessageNode>,
-+    kept: List<MessageNode>,
-+): Conversation {
-+    check(current.messageNodes == snapshot.messageNodes) {
-+        "Messages changed during compression. No messages were replaced; please retry."
-+    }
-+    return current.copy(
-+        messageNodes = summaries.map { UIMessage.user(it).toMessageNode().copy(isSummary = true) } +
-+            compressed.map { it.copy(compressed = true) } + kept.map { it.copy(compressed = false) },
-+        chatSuggestions = emptyList(),
-+    )
-+}
-diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
-index f86d4cd..b0c6fa9 100644
---- a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt
-@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.width
- import androidx.compose.material3.AlertDialog
- import androidx.compose.material3.MaterialTheme
- import androidx.compose.material3.OutlinedTextField
--import androidx.compose.material3.SegmentedButton
--import androidx.compose.material3.SegmentedButtonDefaults
--import androidx.compose.material3.SingleChoiceSegmentedButtonRow
- import androidx.compose.material3.Text
- import androidx.compose.material3.TextButton
- import androidx.compose.runtime.Composable
-@@ -39,7 +36,6 @@ fun CompressContextDialog(
-     var additionalPrompt by remember { mutableStateOf("") }
-     var selectedTokens by remember { mutableIntStateOf(2000) }
-     var keepRecentMessages by remember { mutableIntStateOf(32) }
--    val tokenOptions = listOf(500, 1000, 2000, 4000)
-     var currentJob by remember { mutableStateOf<Job?>(null) }
-     val isLoading = currentJob?.isActive == true
- 
-@@ -81,27 +77,13 @@ fun CompressContextDialog(
-                 } else {
-                     Text(stringResource(R.string.chat_page_compress_context_desc))
- 
--                    // Token size selector
--                    Text(
--                        text = stringResource(R.string.chat_page_compress_target_tokens),
--                        style = MaterialTheme.typography.labelMedium
-+                    // Token size input (0 = unlimited)
-+                    OutlinedNumberInput(
-+                        value = selectedTokens,
-+                        onValueChange = { selectedTokens = it },
-+                        label = stringResource(R.string.chat_page_compress_target_tokens),
-+                        modifier = Modifier.fillMaxWidth(),
-                     )
--                    SingleChoiceSegmentedButtonRow(
--                        modifier = Modifier.fillMaxWidth()
--                    ) {
--                        tokenOptions.forEachIndexed { index, tokens ->
--                            SegmentedButton(
--                                selected = selectedTokens == tokens,
--                                onClick = { selectedTokens = tokens },
--                                shape = SegmentedButtonDefaults.itemShape(
--                                    index = index,
--                                    count = tokenOptions.size
--                                )
--                            ) {
--                                Text("$tokens")
--                            }
--                        }
--                    }
- 
-                     // Keep recent messages input
-                     OutlinedNumberInput(
-diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
-index 35de38a..7e13f38 100644
---- a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
-+++ b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
-@@ -137,6 +137,19 @@ fun ChatMessage(
-         horizontalAlignment = if (message.role == MessageRole.USER) Alignment.End else Alignment.Start,
-         verticalArrangement = Arrangement.spacedBy(4.dp)
-     ) {
-+        if (node.compressed) {
-+            Text(
-+                text = stringResource(R.string.chat_message_compressed_tag),
-+                style = MaterialTheme.typography.labelSmall,
-+                color = MaterialTheme.colorScheme.outline
-+            )
-+        } else if (node.isSummary) {
-+            Text(
-+                text = stringResource(R.string.chat_message_summary_tag),
-+                style = MaterialTheme.typography.labelSmall,
-+                color = MaterialTheme.colorScheme.tertiary
-+            )
-+        }
-         if (!message.parts.isEmptyUIMessage()) {
-             Row(
-                 modifier = Modifier
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
-index 272f003..a52ee97 100644
+index 7bc73c2..d123c91 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ConversationExport.kt
 @@ -52,7 +52,6 @@ import androidx.compose.ui.platform.LocalContext
@@ -506,7 +35,7 @@ index 272f003..a52ee97 100644
  import androidx.compose.ui.unit.dp
 @@ -67,6 +66,11 @@ import coil3.request.allowHardware
  import coil3.request.crossfade
- import com.dokar.sonner.ToastType
+ import me.rerere.ui.toast.ToastType
  import kotlinx.coroutines.CoroutineScope
 +import kotlinx.coroutines.CancellationException
 +import kotlinx.coroutines.Dispatchers
@@ -523,8 +52,8 @@ index 272f003..a52ee97 100644
 -import me.rerere.ai.util.encodeBase64
  import me.rerere.common.android.appTempFolder
  import me.rerere.rikkahub.R
- import me.rerere.rikkahub.data.datastore.Settings
-@@ -119,6 +122,7 @@ fun ChatExportSheet(
+ import me.rerere.rikkahub.data.ai.tools.MemoryToolNames
+@@ -121,6 +124,7 @@ fun ChatExportSheet(
      val density = LocalDensity.current
      val settings = LocalSettings.current
      var exportOptions by remember { mutableStateOf(ExportOptions()) }
@@ -532,7 +61,7 @@ index 272f003..a52ee97 100644
  
      if (visible) {
          ModalBottomSheet(
-@@ -154,13 +158,26 @@ fun ChatExportSheet(
+@@ -156,13 +160,26 @@ fun ChatExportSheet(
                      stringResource(id = R.string.chat_page_export_success, "Markdown")
                  OutlinedCard(
                      onClick = {
@@ -565,7 +94,7 @@ index 272f003..a52ee97 100644
                      modifier = Modifier.fillMaxWidth()
                  ) {
                      ListItem(
-@@ -171,7 +188,13 @@ fun ChatExportSheet(
+@@ -173,7 +190,13 @@ fun ChatExportSheet(
                              Text(stringResource(id = R.string.chat_page_export_markdown_desc))
                          },
                          leadingContent = {
@@ -580,7 +109,7 @@ index 272f003..a52ee97 100644
                          }
                      )
                  }
-@@ -254,143 +277,35 @@ fun ChatExportSheet(
+@@ -256,143 +279,35 @@ fun ChatExportSheet(
      }
  }
  
@@ -875,151 +404,82 @@ index 0000000..08bf272
 +        }
 +    }
 +}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
+index 09c28c9..8ee7a8b 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingPreferencesGeneralPage.kt
+@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.material3.LargeFlexibleTopAppBar
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.foundation.text.KeyboardOptions
++import androidx.compose.ui.text.input.KeyboardType
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Slider
+ import androidx.compose.material3.Text
+@@ -72,6 +75,41 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
+             contentPadding = contentPadding + PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+             verticalArrangement = Arrangement.spacedBy(16.dp)
+         ) {
++            item {
++                CardGroup(title = { Text(stringResource(R.string.setting_page_image_compress_settings)) }) {
++                    switchItem(
++                        checked = settings.imageCompressEnabled,
++                        onCheckedChange = { enabled -> vm.updateSettings { it.copy(imageCompressEnabled = enabled) } },
++                        headlineContent = { Text(stringResource(R.string.setting_general_page_image_compress_title)) },
++                        supportingContent = { Text(stringResource(R.string.setting_general_page_image_compress_desc)) },
++                    )
++                    if (settings.imageCompressEnabled) {
++                        formItem {
++                            var sizeText by remember(settings.imageCompressMaxBytes) {
++                                mutableStateOf(settings.imageCompressMaxBytes.toString())
++                            }
++                            OutlinedTextField(
++                                value = sizeText,
++                                onValueChange = { value ->
++                                    if (value.length <= 4 && value.all { it.isDigit() }) {
++                                        sizeText = value
++                                        value.toIntOrNull()?.takeIf { it in 100..5000 }?.let { size ->
++                                            vm.updateSettings { it.copy(imageCompressMaxBytes = size) }
++                                        }
++                                    }
++                                },
++                                label = { Text(stringResource(R.string.setting_general_page_image_compress_max_size_title)) },
++                                supportingText = { Text("100–5000 KB") },
++                                isError = sizeText.toIntOrNull()?.let { it !in 100..5000 } ?: true,
++                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
++                                singleLine = true,
++                                modifier = Modifier.fillMaxWidth(),
++                            )
++                        }
++                    }
++                }
++            }
++
+             item {
+                 var createNewConversationOnStart by rememberSharedPreferenceBoolean(
+                     "create_new_conversation_on_start",
 diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
-index 47e06e9..8ed0b27 100644
+index 0390247..558685b 100644
 --- a/app/src/main/res/values-zh/strings.xml
 +++ b/app/src/main/res/values-zh/strings.xml
-@@ -232,6 +232,8 @@
-   <string name="chat_input_unsupported_file_type">不支持的文件类型：%s</string>
-   <string name="chat_input_file_read_failed">文件读取失败：%s</string>
-   <string name="chat_message_add_favorite">添加收藏</string>
-+  <string name="chat_message_compressed_tag">已压缩 · 未发送给 AI</string>
-+  <string name="chat_message_summary_tag">压缩摘要</string>
-   <string name="chat_message_remove_favorite">取消收藏</string>
-   <string name="chat_message_tool_approve">批准</string>
-   <string name="chat_message_tool_ask_questions">询问 %d 个问题</string>
-@@ -265,8 +267,8 @@
-   <string name="chat_page_compress_context_title">压缩对话历史</string>
-   <string name="chat_page_compress_keep_recent">保留最近的消息</string>
-   <string name="chat_page_compress_not_enough_messages">消息数量不足，无法压缩。请减少保留的消息数量或添加更多消息。</string>
--  <string name="chat_page_compress_target_tokens">目标Token大小</string>
--  <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>
-+  <string name="chat_page_compress_target_tokens">目标Token大小（0 = 不限）</string>
-+  <string name="chat_page_compress_warning">⚠️ 压缩后原始消息仍会保留在界面中，但不再发送给 AI；最近的消息保持原样</string>
-   <string name="chat_page_compressing">正在压缩...</string>
-   <string name="chat_page_conversation_system_prompt">对话系统提示</string>
-   <string name="chat_page_conversation_system_prompt_clear">清除</string>
-@@ -465,6 +467,7 @@
-   <string name="placeholder_battery_level">电池电量</string>
-   <string name="placeholder_char">助手名称</string>
-   <string name="placeholder_current_date">日期</string>
-+  <string name="placeholder_current_time">当前时间（时:分）</string>
-   <string name="placeholder_device_info">设备信息</string>
-   <string name="placeholder_locale">语言环境</string>
-   <string name="placeholder_model_id">模型ID</string>
+@@ -1604,4 +1608,5 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
+   <string name="media_creation_page_saved_files_partial">已保存 %1$d 个文件，%2$d 个失败：%3$s</string>
+   <string name="chat_input_edit_reasoning">编辑思维过程</string>
+   <string name="chat_input_reasoning_placeholder">思维过程</string>
++  <string name="placeholder_current_time">当前时间</string>
+ </resources>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index 2827362..3d4aef1 100644
+index fe5ac8e..53d3967 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
-@@ -232,6 +232,8 @@
-   <string name="chat_input_unsupported_file_type">Unsupported file type: %s</string>
-   <string name="chat_input_file_read_failed">Failed to read file: %s</string>
-   <string name="chat_message_add_favorite">Add Favorite</string>
-+  <string name="chat_message_compressed_tag">Compressed · not sent to AI</string>
-+  <string name="chat_message_summary_tag">Compression summary</string>
-   <string name="chat_message_remove_favorite">Remove Favorite</string>
-   <string name="chat_message_tool_approve">Approve</string>
-   <string name="chat_message_tool_ask_questions">Ask %d questions</string>
-@@ -265,8 +267,8 @@
-   <string name="chat_page_compress_context_title">Compress Conversation History</string>
-   <string name="chat_page_compress_keep_recent">Keep recent messages</string>
-   <string name="chat_page_compress_not_enough_messages">Not enough messages to compress. Reduce the number of messages to keep or add more messages.</string>
--  <string name="chat_page_compress_target_tokens">Target Token Size</string>
--  <string name="chat_page_compress_warning">⚠️ Compressing context will reset all messages in the current conversation</string>
-+  <string name="chat_page_compress_target_tokens">Target Token Size (0 = Unlimited)</string>
-+  <string name="chat_page_compress_warning">⚠️ Compressed messages stay visible but are not sent to the AI; recent messages are kept as-is</string>
-   <string name="chat_page_compressing">Compressing...</string>
-   <string name="chat_page_conversation_system_prompt">Conversation System Prompt</string>
-   <string name="chat_page_conversation_system_prompt_clear">Clear</string>
-@@ -470,6 +472,7 @@
-   <string name="placeholder_battery_level">Battery Level</string>
-   <string name="placeholder_char">Assistant Name</string>
-   <string name="placeholder_current_date">Date</string>
-+  <string name="placeholder_current_time">Time (HH:mm)</string>
-   <string name="placeholder_device_info">Device Info</string>
-   <string name="placeholder_locale">Locale</string>
-   <string name="placeholder_model_id">Model ID</string>
-diff --git a/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt b/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt
-new file mode 100644
-index 0000000..e0130f3
---- /dev/null
-+++ b/app/src/test/java/me/rerere/rikkahub/service/PatchedHistoryTest.kt
-@@ -0,0 +1,75 @@
-+package me.rerere.rikkahub.service
-+
-+import me.rerere.ai.ui.UIMessage
-+import me.rerere.rikkahub.data.model.Conversation
-+import me.rerere.rikkahub.data.model.MessageNode
-+import me.rerere.rikkahub.data.model.toMessageNode
-+import org.junit.Assert.assertEquals
-+import org.junit.Assert.assertTrue
-+import org.junit.Test
-+import kotlin.uuid.Uuid
-+
-+class PatchedHistoryTest {
-+    private fun conversation(nodes: List<MessageNode>) = Conversation.ofId(Uuid.random(), messages = nodes)
-+
-+    @Test
-+    fun `increasing recent window reactivates kept archived nodes without losing branches`() {
-+        val old = UIMessage.user("old").toMessageNode().copy(compressed = true)
-+        val recent = MessageNode(messages = listOf(UIMessage.user("A"), UIMessage.user("B")), selectIndex = 1, compressed = true)
-+        val snapshot = conversation(listOf(old, recent))
-+        val result = finishPatchedCompression(snapshot, snapshot, listOf("summary"), listOf(old), listOf(recent))
-+        assertEquals(recent.copy(compressed = false), result.messageNodes.last())
-+    }
-+
-+    @Test
-+    fun `compression retains recent node identity alternatives and favorites`() {
-+        val archived = UIMessage.user("old").toMessageNode()
-+        val recent = MessageNode(messages = listOf(UIMessage.user("branch A"), UIMessage.user("branch B")), selectIndex = 1, isFavorite = true)
-+        val snapshot = conversation(listOf(archived, recent))
-+        val result = finishPatchedCompression(snapshot, snapshot.copy(title = "New title"), listOf("summary"), listOf(archived), listOf(recent))
-+        assertEquals(recent, result.messageNodes.last())
-+        assertEquals("New title", result.title)
-+        assertTrue(result.messageNodes[1].compressed)
-+        assertTrue(result.messageNodes[0].isSummary)
-+    }
-+
-+    @Test(expected = IllegalStateException::class)
-+    fun `deleting messages while compression awaits cannot resurrect the snapshot`() {
-+        val node = UIMessage.user("deleted").toMessageNode()
-+        val snapshot = conversation(listOf(node))
-+        finishPatchedCompression(snapshot, snapshot.copy(messageNodes = emptyList()), listOf("summary"), listOf(node), emptyList())
-+    }
-+
-+    @Test(expected = IllegalStateException::class)
-+    fun `editing a message while compression awaits rejects stale summary`() {
-+        val node = UIMessage.user("before").toMessageNode()
-+        val snapshot = conversation(listOf(node))
-+        finishPatchedCompression(snapshot, snapshot.copy(messageNodes = listOf(UIMessage.user("after").toMessageNode())), listOf("summary"), listOf(node), emptyList())
-+    }
-+
-+    @Test
-+    fun `normal generation skips archived nodes when writing back`() {
-+        val old = UIMessage.user("old").toMessageNode().copy(compressed = true)
-+        val active = UIMessage.user("active").toMessageNode()
-+        val reply = UIMessage.user("reply")
-+        val result = mergePatchedGeneration(listOf(old, active), listOf(active.currentMessage, reply))
-+        assertEquals(old, result[0])
-+        assertEquals(active, result[1])
-+        assertEquals(reply, result[2].currentMessage)
-+    }
-+
-+    @Test
-+    fun `regeneration writes multiple output turns to distinct nodes`() {
-+        val archived = UIMessage.user("old").toMessageNode().copy(compressed = true)
-+        val input = UIMessage.user("question").toMessageNode()
-+        val original = UIMessage.user("old answer").toMessageNode()
-+        val tool = UIMessage.user("tool step")
-+        val answer = UIMessage.user("new answer")
-+        val result = mergePatchedGeneration(listOf(archived, input, original), listOf(input.currentMessage, tool, answer), 0..1)
-+        assertEquals(archived, result[0])
-+        assertEquals(tool, result[2].currentMessage)
-+        assertEquals(2, result[2].messages.size)
-+        assertEquals(answer, result[3].currentMessage)
-+        assertEquals(result, mergePatchedGeneration(result, listOf(input.currentMessage, tool, answer), 0..1))
-+    }
-+}
+@@ -1605,4 +1609,5 @@
+   <string name="media_creation_page_saved_files_partial">Saved %1$d files, %2$d failed: %3$s</string>
+   <string name="chat_input_edit_reasoning">Edit reasoning</string>
+   <string name="chat_input_reasoning_placeholder">Reasoning content</string>
++  <string name="placeholder_current_time">Current time</string>
+ </resources>
 diff --git a/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt b/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt
 new file mode 100644
 index 0000000..7bec8e1

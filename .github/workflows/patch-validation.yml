@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: clone tested upstream base
-        run: git clone --depth 1 --branch 2.5.6 --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
+        run: git clone --depth 1 --branch 3.0.0 --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
       - name: apply patches strictly
         run: bash scripts/apply-patches.sh upstream
       - name: Set up JetBrains JDK 21
@@ -54,7 +54,8 @@ jobs:
         working-directory: upstream
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.service.PatchedHistoryTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyCompressionTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyPatchMigrationTest" --tests "me.rerere.rikkahub.data.datastore.SettingsFieldsTest" --tests "me.rerere.rikkahub.data.ai.CompressionSummaryTest" --tests "me.rerere.rikkahub.data.model.ConversationMessagesTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :ai:testDebugUnitTest --tests "me.rerere.ai.ui.MessageContextLimitTest" --no-daemon --stacktrace
           ./gradlew :workspace:testDebugUnitTest --tests "me.rerere.workspace.WorkspaceTransferTest" --no-daemon --stacktrace
           ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: test reports
