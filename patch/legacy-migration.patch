@@ -1,15 +1,25 @@
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index ce7b7ed..6595f2e 100644
+index ce7b7ed..5dfae2f 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
-@@ -321,6 +321,7 @@ dependencies {
+@@ -321,6 +321,8 @@ dependencies {
  
      // tests
      testImplementation(libs.junit)
 +    testImplementation("org.xerial:sqlite-jdbc:3.50.3.0")
++    testRuntimeOnly("org.slf4j:slf4j-nop:${libs.versions.slf4j.get()}")
      testImplementation(libs.kotlinx.coroutines.test)
      androidTestImplementation(libs.androidx.junit)
      androidTestImplementation(libs.androidx.espresso.core)
+@@ -330,3 +332,8 @@ dependencies {
+     debugImplementation(libs.androidx.ui.tooling)
+     debugImplementation(libs.androidx.ui.test.manifest)
+ }
++
++// JVM migration tests must not initialize the production Android Log adapter.
++tasks.withType<Test>().configureEach {
++    systemProperty("slf4j.provider", "org.slf4j.nop.NOPServiceProvider")
++}
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
 index 08e92f3..2b91b02 100644
 --- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
@@ -234,10 +244,10 @@ index 0000000..1c84269
 +}
 diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
 new file mode 100644
-index 0000000..4646a6a
+index 0000000..70a1fa1
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,154 @@
 +package me.rerere.rikkahub.data.db.migrations
 +
 +import android.database.Cursor
@@ -246,6 +256,7 @@ index 0000000..4646a6a
 +import me.rerere.ai.ui.UIMessage
 +import me.rerere.rikkahub.utils.JsonInstant
 +import org.junit.Assert.*
++import org.junit.Before
 +import org.junit.Test
 +import java.io.File
 +import java.lang.reflect.Proxy
@@ -254,6 +265,12 @@ index 0000000..4646a6a
 +
 +/** Executes the real Android migration against SQLite on the JVM. No mocked SQL. */
 +class LegacyPatchMigrationTest {
++    @Before
++    fun loadSqliteDriver() {
++        // Make initialization failures visible rather than swallowed by ServiceLoader.
++        Class.forName("org.sqlite.JDBC")
++    }
++
 +    private fun schema(version: Int): JsonObject {
 +        val root = listOf(File("schemas"), File("app/schemas")).first { it.isDirectory }
 +        return JsonInstant.parseToJsonElement(File(root, "me.rerere.rikkahub.data.db.AppDatabase/$version.json").readText())
