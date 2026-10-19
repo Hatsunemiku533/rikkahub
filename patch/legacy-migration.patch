@@ -233,10 +233,10 @@ index 0000000..dc9f2a9
 +}
 diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
 new file mode 100644
-index 0000000..65cd5a1
+index 0000000..84b4d47
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,123 @@
 +package me.rerere.rikkahub.data.db.migrations
 +
 +import android.database.Cursor
@@ -337,6 +337,12 @@ index 0000000..65cd5a1
 +                            } }
 +                        }
 +                        assertEquals("schema $version patched=$patched table=$table", columns(expected), columns(connection))
++                        fun indices(c: Connection): Set<String> = c.createStatement().use { statement ->
++                            statement.executeQuery("PRAGMA index_list(`$table`)").use { result -> buildSet {
++                                while (result.next()) if (result.getString(4) == "c") add(result.getString(2))
++                            } }
++                        }
++                        assertEquals(indices(expected), indices(connection))
 +                    }
 +                }
 +                connection.createStatement().use { statement ->

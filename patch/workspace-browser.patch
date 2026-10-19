@@ -21,7 +21,7 @@ index 35cb525..12d1d3c 100644
          id: String,
          command: String,
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
-index b3ee983..b856f61 100644
+index b3ee983..4f5dc4a 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/extensions/workspace/WorkspaceDetailPage.kt
 @@ -48,6 +48,8 @@ import androidx.compose.material3.HorizontalFloatingToolbar
@@ -136,7 +136,7 @@ index b3ee983..b856f61 100644
                          Icon(HugeIcons.Refresh01, contentDescription = null)
                      }
                      if (state.workspace?.shellStatus != WorkspaceShellStatus.DISABLED.name) {
-@@ -223,107 +242,115 @@ fun WorkspaceDetailPage(id: String) {
+@@ -223,107 +242,114 @@ fun WorkspaceDetailPage(id: String) {
                  colors = CustomColors.topBarColors,
              )
          },
@@ -204,7 +204,6 @@ index b3ee983..b856f61 100644
 +                    browserState = browserState,
 +                    state = state,
 +                    isActive = pagerState.currentPage == 1,
-+                    contentPadding = PaddingValues(),
 +                    onSelectArea = vm::selectArea,
 +                    onGoUp = vm::goUp,
 +                    onResolveImage = { entry, area -> vm.resolveImageFile(entry, area) },
@@ -339,7 +338,7 @@ index b3ee983..b856f61 100644
              }
          }
      }
-@@ -643,6 +670,8 @@ private fun InstallRootfsDialog(
+@@ -643,6 +669,8 @@ private fun InstallRootfsDialog(
  
  @Composable
  private fun WorkspaceFilesPage(
@@ -348,17 +347,17 @@ index b3ee983..b856f61 100644
      state: WorkspaceDetailState,
      isActive: Boolean,
      onSelectArea: (WorkspaceStorageArea) -> Unit,
-@@ -654,6 +683,30 @@ private fun WorkspaceFilesPage(
+@@ -654,6 +682,30 @@ private fun WorkspaceFilesPage(
      onBatchExport: (List<WorkspaceFileEntry>) -> Unit,
      onShare: (WorkspaceFileEntry) -> Unit,
  ) {
 +    if (state.area == WorkspaceStorageArea.FILES) {
-+        Column(Modifier.fillMaxSize().padding(contentPadding)) {
++        Column(Modifier.fillMaxSize()) {
 +            Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
 +                WorkspaceAreaSelector(selected = state.area, onSelected = onSelectArea, enabled = !browserState.busy)
 +            }
 +            if (state.exporting) {
-+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
++                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
 +                Text("正在导出 ${state.exportCompleted}/${state.exportTotal}")
 +            }
 +            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp)) }
@@ -379,7 +378,7 @@ index b3ee983..b856f61 100644
      var selecting by remember(state.area, state.path) { mutableStateOf(false) }
      var selectedPaths by remember(state.area, state.path) { mutableStateOf(emptySet<String>()) }
      val files = state.entries.filterNot { it.isDirectory }
-@@ -784,11 +837,12 @@ private fun WorkspaceFilesPage(
+@@ -784,11 +836,12 @@ private fun WorkspaceFilesPage(
  private fun WorkspaceAreaSelector(
      selected: WorkspaceStorageArea,
      onSelected: (WorkspaceStorageArea) -> Unit,
@@ -393,7 +392,7 @@ index b3ee983..b856f61 100644
          // 直接放在页面背景上，用更深一档的底色才分得开
          containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
      ) { area, isSelected ->
-@@ -800,6 +854,7 @@ private fun WorkspaceAreaSelector(
+@@ -800,6 +853,7 @@ private fun WorkspaceAreaSelector(
              selected = isSelected,
              icon = HugeIcons.Tick01,
          )
