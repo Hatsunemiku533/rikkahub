@@ -147,6 +147,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.chat.MarkdownExportTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyCompressionTest" --tests "me.rerere.rikkahub.data.db.migrations.LegacyPatchMigrationTest" --tests "me.rerere.rikkahub.data.datastore.SettingsFieldsTest" --tests "me.rerere.rikkahub.data.ai.CompressionSummaryTest" --tests "me.rerere.rikkahub.data.model.ConversationMessagesTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceRangeSelectionTest" --tests "me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileBrowserTest" --no-daemon --stacktrace
+          ./gradlew :ai:testDebugUnitTest --tests "me.rerere.ai.ui.MessageContextLimitTest" --no-daemon --stacktrace
           ./gradlew :workspace:testDebugUnitTest --tests "me.rerere.workspace.WorkspaceTransferTest" --no-daemon --stacktrace
       - name: gradle build
         working-directory: upstream

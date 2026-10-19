@@ -1234,7 +1234,7 @@ index 0000000..f824eef
 +    }
 +}
 diff --git a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
-index 8f0bbe2..84d3312 100644
+index 8f0bbe2..db8bf73 100644
 --- a/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
 +++ b/workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt
 @@ -6,7 +6,9 @@ import java.nio.charset.Charset
@@ -1276,7 +1276,7 @@ index 8f0bbe2..84d3312 100644
 +        require(!dest.toPath().startsWith(src.toPath())) { "Cannot transfer a directory into itself" }
 +        require(!src.toPath().startsWith(dest.toPath())) { "Cannot replace a parent of the source" }
 +        require(!dest.exists() || overwrite) { "Target already exists: $target" }
-+        val parent = dest.parentFile
++        val parent = requireNotNull(dest.parentFile) { "Target has no parent directory" }
 +        require(parent.isDirectory) { "Target directory does not exist" }
 +        val stage = File(parent, ".rikkahub-transfer-${UUID.randomUUID()}")
 +        val backup = File(parent, ".rikkahub-backup-${UUID.randomUUID()}")

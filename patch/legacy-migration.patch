@@ -95,7 +95,7 @@ index 0000000..e600ba7
 +}
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt
 new file mode 100644
-index 0000000..f7055b9
+index 0000000..f0ca11c
 --- /dev/null
 +++ b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigration.kt
 @@ -0,0 +1,75 @@
@@ -151,7 +151,7 @@ index 0000000..f7055b9
 +            convertLegacyCompression(nodes).forEachIndexed { index, node ->
 +                db.execSQL(
 +                    "INSERT INTO _legacy_message_node (id, conversation_id, node_index, messages, select_index) VALUES (?, ?, ?, ?, ?)",
-+                    arrayOf(node.id, conversationId, index, node.messages, node.selectIndex),
++                    arrayOf<Any?>(node.id, conversationId, index, node.messages, node.selectIndex),
 +                )
 +            }
 +        }
@@ -176,13 +176,14 @@ index 0000000..f7055b9
 +}
 diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt
 new file mode 100644
-index 0000000..dc9f2a9
+index 0000000..1c84269
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyCompressionTest.kt
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,52 @@
 +package me.rerere.rikkahub.data.db.migrations
 +
 +import me.rerere.ai.ui.UIMessage
++import me.rerere.ai.ui.UIMessagePart
 +import me.rerere.ai.ui.limitContext
 +import me.rerere.rikkahub.utils.JsonInstant
 +import org.junit.Assert.*
@@ -196,7 +197,7 @@ index 0000000..dc9f2a9
 +    fun `upgrade preserves opaque originals and selected branches while keeping only summary and recent context`() {
 +        val summary = node("s", "important decisions", summary = true)
 +        val archived = node("a", "old text and attachments", compressed = true).copy(
-+            messages = JsonInstant.encodeToString(listOf(UIMessage.user("branch A"), UIMessage.user("branch B"))),
++            messages = JsonInstant.encodeToString(listOf(UIMessage.user("branch A"), UIMessage.user("branch B").copy(parts = listOf(UIMessagePart.Text("branch B"), UIMessagePart.Image("/saved/image.jpg"))))),
 +            selectIndex = 1,
 +        )
 +        val recent = node("r", "recent exact text")
@@ -233,10 +234,10 @@ index 0000000..dc9f2a9
 +}
 diff --git a/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
 new file mode 100644
-index 0000000..84b4d47
+index 0000000..4646a6a
 --- /dev/null
 +++ b/app/src/test/java/me/rerere/rikkahub/data/db/migrations/LegacyPatchMigrationTest.kt
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,147 @@
 +package me.rerere.rikkahub.data.db.migrations
 +
 +import android.database.Cursor
@@ -300,6 +301,30 @@ index 0000000..84b4d47
 +    } as SupportSQLiteDatabase
 +
 +    @Test
++    fun `failed conversion rolls back without changing old messages or schema`() {
++        DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
++            connection.createSchema(25)
++            val db = database(connection)
++            db.execSQL("ALTER TABLE message_node ADD COLUMN compressed INTEGER NOT NULL DEFAULT 0")
++            db.execSQL("ALTER TABLE message_node ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0")
++            db.execSQL("INSERT INTO ConversationEntity (id,title,nodes,create_at,update_at) VALUES ('c','test','[]',1,1)")
++            db.execSQL("INSERT INTO message_node (id,conversation_id,node_index,messages,select_index,compressed) VALUES ('a','c',0,'[]',0,1)")
++            connection.autoCommit = false
++            assertThrows(IllegalStateException::class.java) { LegacyPatchMigration_26_27.migrate(db) }
++            connection.rollback()
++            connection.autoCommit = true
++            connection.createStatement().use { statement ->
++                statement.executeQuery("SELECT compressed,messages FROM message_node WHERE id='a'").use { result ->
++                    assertTrue(result.next()); assertEquals(1, result.getInt(1)); assertEquals("[]", result.getString(2))
++                }
++                statement.executeQuery("SELECT count(*) FROM sqlite_master WHERE name='_legacy_message_node' OR name='media_creation_session'").use { result ->
++                    result.next(); assertEquals(0, result.getInt(1))
++                }
++            }
++        }
++    }
++
++    @Test
 +    fun `official and fork schemas converge without losing branches or favorites`() {
 +        for (version in 24..26) for (patched in listOf(false, true)) {
 +            DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
@@ -316,7 +341,7 @@ index 0000000..84b4d47
 +                db.execSQL("INSERT INTO ConversationEntity (id,title,nodes,create_at,update_at) VALUES ('c','test','[]',1,1)")
 +                val rows = listOf("s" to listOf(UIMessage.user("summary")), "a" to listOf(UIMessage.user("branch A"), UIMessage.user("branch B")), "r" to listOf(UIMessage.user("recent")))
 +                rows.forEachIndexed { i, (id, messages) ->
-+                    db.execSQL("INSERT INTO message_node (id,conversation_id,node_index,messages,select_index) VALUES (?, 'c', ?, ?, ?)", arrayOf(id, i, JsonInstant.encodeToString(messages), if (id == "a") 1 else 0))
++                    db.execSQL("INSERT INTO message_node (id,conversation_id,node_index,messages,select_index) VALUES (?, 'c', ?, ?, ?)", arrayOf<Any?>(id, i, JsonInstant.encodeToString(messages), if (id == "a") 1 else 0))
 +                }
 +                db.execSQL("INSERT INTO favorites (id,type,ref_key,ref_json,snapshot_json,created_at,updated_at) VALUES ('f','message','a','{}','{}',1,1)")
 +                if (patched) {
