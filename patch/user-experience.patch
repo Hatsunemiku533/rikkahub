@@ -461,23 +461,23 @@ index 09c28c9..8ee7a8b 100644
                  var createNewConversationOnStart by rememberSharedPreferenceBoolean(
                      "create_new_conversation_on_start",
 diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
-index 0390247..558685b 100644
+index aac20af..5cf5256 100644
 --- a/app/src/main/res/values-zh/strings.xml
 +++ b/app/src/main/res/values-zh/strings.xml
-@@ -1604,4 +1608,5 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
-   <string name="media_creation_page_saved_files_partial">已保存 %1$d 个文件，%2$d 个失败：%3$s</string>
-   <string name="chat_input_edit_reasoning">编辑思维过程</string>
-   <string name="chat_input_reasoning_placeholder">思维过程</string>
+@@ -1681,4 +1681,5 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过
+   <string name="setting_provider_page_grok_disclaimer">以 Grok CLI 的方式登录，使用你的 SuperGrok 订阅。实验性功能：xAI 可能随时更改或限制此功能。</string>
+   <string name="setting_provider_page_device_code_hint">请在浏览器中确认此验证码</string>
+   <string name="setting_provider_page_device_code_reopen">点击重新打开页面</string>
 +  <string name="placeholder_current_time">当前时间</string>
  </resources>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index fe5ac8e..53d3967 100644
+index 8be9bfb..5775c3f 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
-@@ -1605,4 +1609,5 @@
-   <string name="media_creation_page_saved_files_partial">Saved %1$d files, %2$d failed: %3$s</string>
-   <string name="chat_input_edit_reasoning">Edit reasoning</string>
-   <string name="chat_input_reasoning_placeholder">Reasoning content</string>
+@@ -1679,4 +1679,5 @@
+   <string name="setting_provider_page_grok_disclaimer">Uses your SuperGrok subscription by signing in like the Grok CLI. Experimental: xAI may change or restrict this at any time.</string>
+   <string name="setting_provider_page_device_code_hint">Confirm this code in the browser</string>
+   <string name="setting_provider_page_device_code_reopen">Tap to open the page again</string>
 +  <string name="placeholder_current_time">Current time</string>
  </resources>
 diff --git a/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt b/app/src/test/java/me/rerere/rikkahub/ui/pages/chat/MarkdownExportTest.kt

@@ -1,11 +1,11 @@
 # Patched release builds
 
-Patch base: upstream **3.0.0**, commit `55a108a4477fa308d6eacbe22ebf2fb0ceea1420`.
+Patch base: upstream **3.1.0**, commit `eeef60b22ba24383daf51f3c6c2e5b75bbab6bba`.
 Apply with `bash scripts/apply-patches.sh <clean-upstream-checkout>` in this order:
 
 1. `image-compress.patch`: optional outgoing image compression, existing settings retained.
 2. `user-experience.patch`: `{{time}}` and streaming Markdown export without embedded images.
-3. `workspace-browser.patch`: the existing dual-pane workspace file browser, ported to 3.0.
+3. `workspace-browser.patch`: the existing dual-pane workspace file browser, ported to 3.1.
 4. `legacy-migration.patch`: one-time upgrade compatibility for the old fork database.
 
 CI builds an upstream release **plus these patches**, not the fork's root application
@@ -19,7 +19,7 @@ context selection use the unmodified upstream implementation. The old target-tok
 option, custom compression model/prompt, compressed node flags, UI tags and generation
 merge helpers have been removed from the live code. No old `PatchedHistory` remains.
 
-Upstream 3.0.0 summarizes the current context with the current chat model. It retains
+Upstream 3.1.0 summarizes the current context with the current chat model. It retains
 history and inserts an official checkpoint; there is no keep-recent or target-token
 setting. Recompression summarizes the last checkpoint and subsequent messages.
 
@@ -36,7 +36,7 @@ The compatibility patch replaces only 24→25, 25→26 and 26→27 with guarded 
 - Add official conversation config, convert old summaries, and rebuild message_node
   without custom columns, matching official schema 27 exactly.
 - Continue through upstream's normal 27→28 memory migration and later migrations to
-  **official schema 30**. No fork schema bump or destructive fallback is introduced.
+  **official schema 31** (including upstream 30→31 migration). No fork schema bump or destructive fallback is introduced.
 
 Each legacy conversation retains its original nodes, message JSON, selected branches,
 IDs, attachments and favorites. Its old summary chunks are joined in a new official
