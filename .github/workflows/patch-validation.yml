@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: clone tested upstream base
-        run: git clone --depth 1 --branch 3.0.0 --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
+        run: git clone --depth 1 --branch 3.1.0 --recurse-submodules --shallow-submodules https://github.com/rikkahub/rikkahub.git upstream
       - name: apply patches strictly
         run: bash scripts/apply-patches.sh upstream
       - name: Set up JetBrains JDK 21

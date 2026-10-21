@@ -1,5 +1,5 @@
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index ce7b7ed..5dfae2f 100644
+index 1b2e1e0..2bc0949 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -321,6 +321,8 @@ dependencies {
@@ -21,10 +21,10 @@ index ce7b7ed..5dfae2f 100644
 +    systemProperty("slf4j.provider", "org.slf4j.nop.NOPServiceProvider")
 +}
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-index 08e92f3..2b91b02 100644
+index 3f4eb33..8eec092 100644
 --- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-@@ -72,9 +72,6 @@ import me.rerere.rikkahub.utils.JsonInstant
+@@ -75,9 +75,6 @@ import me.rerere.rikkahub.utils.JsonInstant
          AutoMigration(from = 21, to = 22),
          AutoMigration(from = 22, to = 23, spec = Migration_22_23::class),
          AutoMigration(from = 23, to = 24),
@@ -35,29 +35,29 @@ index 08e92f3..2b91b02 100644
          AutoMigration(from = 29, to = 30),
      ]
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
-index b7cb295..88a0403 100644
+index ea6cef7..880e5f8 100644
 --- a/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/data/db/AppDatabaseFactory.kt
-@@ -11,6 +11,9 @@ import me.rerere.rikkahub.data.db.migrations.Migration_13_14
+@@ -10,6 +10,9 @@ import me.rerere.rikkahub.data.db.migrations.Migration_13_14
  import me.rerere.rikkahub.data.db.migrations.Migration_14_15
  import me.rerere.rikkahub.data.db.migrations.Migration_15_16
  import me.rerere.rikkahub.data.db.migrations.Migration_27_28
 +import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_24_25
 +import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_25_26
 +import me.rerere.rikkahub.data.db.migrations.LegacyPatchMigration_26_27
+ import me.rerere.rikkahub.data.db.migrations.Migration_30_31
+ import me.rerere.rikkahub.data.db.migrations.Migration_6_7
  
- /** Shared schema, migrations and extensions for the app and staged backup validation. */
- internal object AppDatabaseFactory {
-@@ -24,6 +27,9 @@ internal object AppDatabaseFactory {
+@@ -25,6 +28,9 @@ internal object AppDatabaseFactory {
                  Migration_14_15,
                  Migration_15_16,
                  Migration_27_28,
 +                LegacyPatchMigration_24_25,
 +                LegacyPatchMigration_25_26,
 +                LegacyPatchMigration_26_27,
+                 Migration_30_31,
              )
              .addCallback(object : RoomDatabase.Callback() {
-                 override fun onOpen(db: SupportSQLiteDatabase) {
 diff --git a/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyCompression.kt b/app/src/main/java/me/rerere/rikkahub/data/db/migrations/LegacyCompression.kt
 new file mode 100644
 index 0000000..e600ba7
